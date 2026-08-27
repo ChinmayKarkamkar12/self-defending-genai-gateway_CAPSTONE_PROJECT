@@ -2,6 +2,7 @@
 
 ## Completed modules
 - [x] Module 1: Repo & conventions — `docker compose up` works, `GET /health` returns 200, pytest (3 tests) and ruff both clean, CI added. Commit `8d185a2`.
+  - Re-verified end-to-end on 2026-08-27: repo structure matches plan §2, `docker compose up -d` starts cleanly, `curl /health` → 200 `{"status":"ok"}`, `pytest` 3/3 pass, `ruff check .` clean, `.env` untracked & git-ignored, missing-`.env` fails loudly (compose error + pydantic ValidationError), CI green on GitHub Actions for commits `8d185a2` and `61f0c3f`. Every Definition-of-Done item confirmed.
 
 ## In progress
 (none yet)
