@@ -1,7 +1,13 @@
 fastapi
 uvicorn[standard]
 pydantic-settings
+sqlalchemy>=2.0
+asyncpg
+psycopg2-binary
+alembic
+httpx
 pytest
 pytest-asyncio
-httpx
+aiosqlite
+respx
 ruff

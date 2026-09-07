@@ -7,4 +7,50 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    environment:
+      # .env's POSTGRES_DSN/REDIS_URL point at `localhost`, which is correct
+      # for running the gateway on the host (dev, tests, alembic, seed
+      # script) but wrong inside this compose network, where `localhost`
+      # resolves to the gateway container itself, not the postgres/redis
+      # containers. Override with the service DNS names for the
+      # containerized gateway specifically; env_file values above are
+      # superseded by these.
+      POSTGRES_DSN: postgresql://postgres:postgres@postgres:5432/gateway
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: gateway
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
