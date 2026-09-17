@@ -2,15 +2,26 @@
 
 Runs after the provider responds, once actual `tokens_in`/`tokens_out` are
 known - this is the authoritative accounting step, distinct from the
-pre-call estimate `budget_check_stage` never needs. Writes a durable
-`UsageRecord` and increments the team's Redis spend counter for the current
-budget window.
+pre-call estimate `budget_check_stage` uses to size its spend reservation.
+Writes a durable `UsageRecord` and reconciles the team's Redis spend counter
+from the pre-call estimate to the real cost.
+
+An unpriced model (pricing.py hasn't been updated yet) does not block an
+already-successful response - the provider has already answered, so failing
+the request now would throw away a good result over a bookkeeping gap. The
+`UsageRecord` is still written (with cost 0) so the gap is visible in the
+usage data, and a warning is logged.
 """
+import logging
+from decimal import Decimal
+
 from app.core.context import RequestContext, StageResult
-from app.core.governance.budget import get_budget_policy, record_spend
-from app.core.governance.pricing import calculate_cost
+from app.core.governance.budget import get_budget_policy, reconcile_reservation
+from app.core.governance.pricing import UnknownPricingError, calculate_cost
 from app.core.governance.token_counter import extract_usage
 from app.db.models import UsageRecord
+
+logger = logging.getLogger("gateway.governance.usage")
 
 
 async def usage_recording_stage(ctx: RequestContext) -> StageResult:
@@ -20,7 +31,11 @@ async def usage_recording_stage(ctx: RequestContext) -> StageResult:
     model = ctx.body.get("model", "")
 
     tokens_in, tokens_out = extract_usage(response)
-    cost_usd = calculate_cost(model, tokens_in, tokens_out)
+    try:
+        cost_usd = calculate_cost(model, tokens_in, tokens_out)
+    except UnknownPricingError:
+        logger.warning("no pricing entry for model '%s'; recording cost as 0", model)
+        cost_usd = Decimal("0")
 
     db.add(
         UsageRecord(
@@ -36,6 +51,7 @@ async def usage_recording_stage(ctx: RequestContext) -> StageResult:
 
     policy = await get_budget_policy(db, ctx.team_id)
     if policy is not None:
-        await record_spend(redis, ctx.team_id, policy.period, cost_usd)
+        reservation = ctx.metadata.get("budget_reservation", Decimal("0"))
+        await reconcile_reservation(redis, ctx.team_id, policy.period, reservation, cost_usd)
 
     return StageResult.allow()

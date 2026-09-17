@@ -4,6 +4,7 @@ See project_plan/02-gateway-core-proxy.md §3.
 """
 import logging
 import uuid
+from decimal import Decimal
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -13,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import authenticate
 from app.core.context import Decision, RequestContext
+from app.core.governance.budget import release_reservation
 from app.core.governance.redis_client import get_redis
 from app.core.pipeline import (
     POST_CALL_STAGES,
@@ -46,6 +48,22 @@ async def _require_api_key(
     return api_key
 
 
+async def _release_budget_reservation(ctx: RequestContext) -> None:
+    """Refund a pre-call budget reservation for a request that will never
+    reach `run_usage_recording` to reconcile it - otherwise the reservation
+    permanently overstates the team's spend. No-op if budget_check_stage
+    never reserved anything (no policy configured for the team).
+    """
+    period = ctx.metadata.get("budget_period")
+    if period is None:
+        return
+    reservation = ctx.metadata.get("budget_reservation", Decimal("0"))
+    try:
+        await release_reservation(ctx.metadata["redis"], ctx.team_id, period, reservation)
+    except Exception:  # noqa: BLE001 - best-effort refund, must not mask the real error
+        logger.error("failed to release budget reservation for team %s", ctx.team_id)
+
+
 @router.post("/v1/chat/completions")
 async def chat_completions(
     body: dict[str, Any],
@@ -61,20 +79,24 @@ async def chat_completions(
     try:
         pre_result = await run_stages(PRE_CALL_STAGES, ctx)
     except StageFailure:
+        await _release_budget_reservation(ctx)
         raise HTTPException(status_code=503, detail=PIPELINE_UNAVAILABLE_DETAIL) from None
 
     if pre_result.decision == Decision.BLOCK:
+        await _release_budget_reservation(ctx)
         raise HTTPException(status_code=422, detail=pre_result.reason or "blocked by pipeline")
 
     model = ctx.body.get("model", "")
     try:
         provider = get_provider(model)
     except UnknownModelError as exc:
+        await _release_budget_reservation(ctx)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     try:
         response = await provider.chat_completion(ctx.body)
     except UpstreamProviderError as exc:
+        await _release_budget_reservation(ctx)
         raise HTTPException(status_code=502, detail=f"upstream provider error: {exc}") from exc
 
     ctx.metadata["provider_response"] = response
@@ -82,6 +104,7 @@ async def chat_completions(
     try:
         await run_usage_recording(ctx)
     except StageFailure:
+        await _release_budget_reservation(ctx)
         raise HTTPException(status_code=503, detail=PIPELINE_UNAVAILABLE_DETAIL) from None
 
     try:
