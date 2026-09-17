@@ -32,6 +32,9 @@ async def store_token(
     """
     token = f"[REDACTED_{entity_type}_{secrets.token_hex(4)}]"
     encrypted_value = _fernet().encrypt(original_value.encode())
+    # `expires_at` is deliberately left NULL - see RedactionVault's KNOWN
+    # LIMITATION docstring (app/db/models.py). No retention job exists to
+    # act on it yet even if it were set.
     db.add(
         RedactionVault(token=token, encrypted_value=encrypted_value, team_id=team_id)
     )

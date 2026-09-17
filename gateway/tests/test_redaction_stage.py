@@ -1,6 +1,8 @@
+import pytest
+
 from app.core.context import Decision, RequestContext
 from app.core.redaction.vault import resolve_token
-from app.core.stages.pii_redaction import pii_redaction_stage
+from app.core.stages.pii_redaction import RedactionError, pii_redaction_stage
 from app.db.models import RedactionMode, RedactionPolicy
 
 
@@ -133,3 +135,36 @@ async def test_no_policy_uses_default_and_redacts(db_session, seeded_team_and_ke
 
     assert result.decision == Decision.MODIFY
     assert email not in result.modified_body["messages"][0]["content"]
+
+
+async def test_malformed_input_crash_never_leaks_raw_text(db_session, seeded_team_and_key, caplog):
+    """Regression test for the module-4 audit finding: a lone UTF-16
+    surrogate character reliably crashes spaCy's tokenizer with a
+    `UnicodeEncodeError` deep inside Presidio. Confirm that when
+    pii_redaction_stage fails, (1) it raises the module's own sanitized
+    `RedactionError`, never the raw underlying exception, and (2) none of
+    the sensitive text surrounding the malformed character - an email and a
+    real-shaped credit card number - appears anywhere in what gets logged.
+    """
+    team, api_key = seeded_team_and_key
+    email = "jane.smith@example.com"
+    card = "4111111111111111"
+    content = f"contact {email} about \ud800 this, card {card}"
+    ctx = make_ctx(team.id, api_key.id, db_session, content)
+
+    with caplog.at_level("ERROR", logger="gateway.redaction"):
+        with pytest.raises(RedactionError) as exc_info:
+            await pii_redaction_stage(ctx)
+
+    # The exception itself carries only the failing exception's type name.
+    assert email not in str(exc_info.value)
+    assert card not in str(exc_info.value)
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+
+    # Nothing logged along the way contains the raw sensitive text either.
+    assert email not in caplog.text
+    assert card not in caplog.text
+
+    # A failed redaction must never have written anything to metadata.
+    assert "redaction_map" not in ctx.metadata

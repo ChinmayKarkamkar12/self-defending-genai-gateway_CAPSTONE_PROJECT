@@ -14,7 +14,7 @@ from presidio_analyzer.nlp_engine import NlpEngineProvider
 
 from app.core.redaction import patterns
 from app.core.redaction.merge import merge_spans
-from app.core.redaction.spans import Span
+from app.core.redaction.spans import SOURCE_PRESIDIO, Span
 
 _SPACY_MODEL = "en_core_web_sm"
 
@@ -47,7 +47,7 @@ def analyze_text(text: str, enabled_entities: list[str]) -> list[Span]:
         else []
     )
     presidio_spans = [
-        Span(r.start, r.end, r.entity_type, r.score) for r in presidio_results
+        Span(r.start, r.end, r.entity_type, r.score, SOURCE_PRESIDIO) for r in presidio_results
     ]
 
     custom_spans = [s for s in patterns.detect_custom(text) if s.entity_type in enabled_entities]

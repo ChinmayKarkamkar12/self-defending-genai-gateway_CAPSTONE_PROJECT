@@ -107,6 +107,15 @@ class RedactionVault(Base):
     (app/core/redaction/vault.py); no raw value is ever stored in plaintext.
     Schema exists so a future authenticated detokenize endpoint doesn't need
     a migration to add - not wired up until a real use case needs it.
+
+    KNOWN LIMITATION: no retention/expiry. `expires_at` exists as a column
+    but nothing currently sets it (`vault.py`'s `store_token` always leaves
+    it NULL) or reads/enforces it - there is no cleanup job, cron task, or
+    query anywhere that deletes old rows. Every tokenized PII value is kept
+    forever once written. This is fine for a capstone demo; a real
+    deployment would need a retention job (e.g. delete rows past
+    `expires_at`, and actually populate `expires_at` on write) before this
+    table could hold real user data at any real scale or duration.
     """
 
     __tablename__ = "redaction_vault"
@@ -115,4 +124,7 @@ class RedactionVault(Base):
     encrypted_value: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     team_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("teams.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    # Always NULL today - see the KNOWN LIMITATION note above. Column kept so
+    # a retention job can be added without a migration, same rationale as
+    # the table itself.
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
