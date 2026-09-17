@@ -7,24 +7,14 @@ resources are tight for the demo environment") and builds the engine lazily
 so importing this module doesn't pay spaCy's load cost until redaction is
 actually needed.
 """
-import os
+from functools import lru_cache
 
-# Presidio's TransformersNlpEngine imports `transformers` unconditionally at
-# package-import time, which probes for a TensorFlow backend. We only ever
-# use the spaCy engine below, so this must be set before the first
-# `presidio_analyzer` import anywhere in the process (conftest.py sets it
-# for tests; the Dockerfile sets it for the running gateway). Set here too
-# so this module works correctly if imported standalone.
-os.environ.setdefault("USE_TF", "0")
+from presidio_analyzer import AnalyzerEngine
+from presidio_analyzer.nlp_engine import NlpEngineProvider
 
-from functools import lru_cache  # noqa: E402
-
-from presidio_analyzer import AnalyzerEngine  # noqa: E402
-from presidio_analyzer.nlp_engine import NlpEngineProvider  # noqa: E402
-
-from app.core.redaction import patterns  # noqa: E402
-from app.core.redaction.merge import merge_spans  # noqa: E402
-from app.core.redaction.spans import Span  # noqa: E402
+from app.core.redaction import patterns
+from app.core.redaction.merge import merge_spans
+from app.core.redaction.spans import Span
 
 _SPACY_MODEL = "en_core_web_sm"
 
