@@ -18,10 +18,12 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 
 import pytest
+from fakeredis.aioredis import FakeRedis
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.auth import hash_key
+from app.core.governance.redis_client import get_redis
 from app.db.base import Base
 from app.db.models import ApiKey, Team
 from app.db.session import get_db
@@ -57,11 +59,22 @@ async def seeded_team_and_key(db_session):
 
 
 @pytest.fixture
-async def client(db_session, seeded_team_and_key):
+async def fake_redis():
+    redis = FakeRedis(decode_responses=True)
+    yield redis
+    await redis.aclose()
+
+
+@pytest.fixture
+async def client(db_session, seeded_team_and_key, fake_redis):
     async def _override_get_db():
         yield db_session
 
+    async def _override_get_redis():
+        return fake_redis
+
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_redis] = _override_get_redis
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac

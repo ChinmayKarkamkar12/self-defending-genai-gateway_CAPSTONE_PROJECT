@@ -6,8 +6,12 @@ asyncpg
 psycopg2-binary
 alembic
 httpx
+redis
+tiktoken
 pytest
 pytest-asyncio
 aiosqlite
 respx
+fakeredis
+lupa
 ruff

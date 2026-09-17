@@ -2,7 +2,12 @@
 
 Stage order (pre-call -> provider call -> post-call -> audit):
     [budget_check, threat_detection, pii_redaction] -> provider_call
-    -> [output_scan] -> [audit_log]
+    -> usage_recording -> [output_scan] -> [audit_log]
+
+`usage_recording` runs unconditionally right after the provider responds,
+before output_scan - cost was already incurred with the provider regardless
+of what output_scan decides, so accounting must not be skippable by a later
+stage's BLOCK. See project_plan/03-cost-usage-governance.md §4.
 
 Every stage call is wrapped in try/except. On an exception:
   - FAIL_MODE=closed (default) -> the stage is treated as BLOCK (503 to the caller)
@@ -15,6 +20,7 @@ from typing import Protocol
 
 from app.config import settings
 from app.core.context import Decision, RequestContext, StageResult
+from app.core.governance.usage_recorder import usage_recording_stage
 from app.core.stages.audit_log import audit_log_stage
 from app.core.stages.budget_check import budget_check_stage
 from app.core.stages.output_scan import output_scan_stage
@@ -74,6 +80,13 @@ async def run_stages(stages: list[PipelineStage], ctx: RequestContext) -> StageR
         if result.decision == Decision.MODIFY and result.modified_body is not None:
             ctx.body = result.modified_body
     return StageResult.allow()
+
+
+async def run_usage_recording(ctx: RequestContext) -> None:
+    """Best-effort-under-FAIL_MODE=open, fail-closed-by-default post-call
+    cost accounting. See module docstring for why this isn't a POST_CALL_STAGE.
+    """
+    await _run_stage(usage_recording_stage, ctx)
 
 
 async def run_audit_log(ctx: RequestContext) -> None:

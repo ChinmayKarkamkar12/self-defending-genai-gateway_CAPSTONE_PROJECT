@@ -5,7 +5,12 @@ from sqlalchemy import engine_from_config, pool
 from alembic import context
 from app.config import settings
 from app.db.base import Base
-from app.db.models import ApiKey, Team  # noqa: F401 - registers models on Base.metadata
+from app.db.models import (  # noqa: F401 - registers models on Base.metadata
+    ApiKey,
+    BudgetPolicy,
+    Team,
+    UsageRecord,
+)
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.POSTGRES_DSN)

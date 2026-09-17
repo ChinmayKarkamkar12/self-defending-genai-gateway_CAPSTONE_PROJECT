@@ -8,16 +8,19 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import JSONResponse
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import authenticate
 from app.core.context import Decision, RequestContext
+from app.core.governance.redis_client import get_redis
 from app.core.pipeline import (
     POST_CALL_STAGES,
     PRE_CALL_STAGES,
     StageFailure,
     run_audit_log,
     run_stages,
+    run_usage_recording,
 )
 from app.core.providers.base import UpstreamProviderError
 from app.core.providers.registry import UnknownModelError, get_provider
@@ -47,9 +50,13 @@ async def _require_api_key(
 async def chat_completions(
     body: dict[str, Any],
     api_key=Depends(_require_api_key),  # noqa: B008 - standard FastAPI DI pattern
+    db: AsyncSession = Depends(get_db),  # noqa: B008 - standard FastAPI DI pattern
+    redis: Redis = Depends(get_redis),  # noqa: B008 - standard FastAPI DI pattern
 ) -> Any:
     request_id = str(uuid.uuid4())
     ctx = RequestContext(body=body, api_key_id=api_key.id, team_id=api_key.team_id)
+    ctx.metadata["db"] = db
+    ctx.metadata["redis"] = redis
 
     try:
         pre_result = await run_stages(PRE_CALL_STAGES, ctx)
@@ -73,6 +80,11 @@ async def chat_completions(
     ctx.metadata["provider_response"] = response
 
     try:
+        await run_usage_recording(ctx)
+    except StageFailure:
+        raise HTTPException(status_code=503, detail=PIPELINE_UNAVAILABLE_DETAIL) from None
+
+    try:
         post_result = await run_stages(POST_CALL_STAGES, ctx)
     except StageFailure:
         raise HTTPException(status_code=503, detail=PIPELINE_UNAVAILABLE_DETAIL) from None
@@ -87,4 +99,7 @@ async def chat_completions(
         logger.error("audit logging failed: %s", exc)
         raise HTTPException(status_code=503, detail=PIPELINE_UNAVAILABLE_DETAIL) from None
 
-    return JSONResponse(content=response, headers={"x-gateway-request-id": request_id})
+    headers = {"x-gateway-request-id": request_id}
+    if "budget_remaining" in ctx.metadata:
+        headers["x-gateway-budget-remaining"] = ctx.metadata["budget_remaining"]
+    return JSONResponse(content=response, headers=headers)
