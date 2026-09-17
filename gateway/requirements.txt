@@ -8,6 +8,17 @@ alembic
 httpx
 redis
 tiktoken
+# Pinned below 2.2.35: newer presidio-analyzer eagerly imports optional
+# GLiNER/HuggingFace NER recognizers at package-import time, which pulls in
+# `transformers` regardless of whether they're used. We only use the spaCy
+# engine (see app/core/redaction/analyzer.py) and don't want a transformers/
+# torch dependency for this module. Run `python -m spacy download
+# en_core_web_sm` once after installing requirements — the model isn't a
+# normal PyPI package and can't be pinned here.
+presidio-analyzer==2.2.33
+presidio-anonymizer
+spacy
+cryptography
 pytest
 pytest-asyncio
 aiosqlite

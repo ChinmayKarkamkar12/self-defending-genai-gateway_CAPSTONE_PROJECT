@@ -13,7 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.governance.budget import get_budget_policy, get_current_spend
 from app.core.governance.redis_client import get_redis
-from app.db.models import BudgetPeriod, BudgetPolicy, UsageRecord
+from app.core.redaction.policy import get_redaction_policy
+from app.db.models import BudgetPeriod, BudgetPolicy, RedactionMode, RedactionPolicy, UsageRecord
 from app.db.session import get_db
 
 router = APIRouter(prefix="/v1/admin")
@@ -45,6 +46,19 @@ class BudgetPolicyIn(BaseModel):
     period: BudgetPeriod
     limit_usd: Decimal
     rate_limit_rps: int
+
+
+class RedactionPolicyOut(BaseModel):
+    team_id: UUID
+    enabled_entities: list[str]
+    mode: RedactionMode
+
+    model_config = {"from_attributes": True}
+
+
+class RedactionPolicyIn(BaseModel):
+    enabled_entities: list[str]
+    mode: RedactionMode
 
 
 @router.get("/usage", response_model=list[UsageRecordOut])
@@ -83,6 +97,37 @@ async def get_budget(
         current_spend_usd=current_spend,
         remaining_usd=policy.limit_usd - current_spend,
     )
+
+
+@router.get("/redaction-policy/{team_id}", response_model=RedactionPolicyOut)
+async def get_redaction_policy_endpoint(
+    team_id: UUID,
+    db: AsyncSession = Depends(get_db),  # noqa: B008 - standard FastAPI DI pattern
+) -> RedactionPolicy:
+    policy = await get_redaction_policy(db, team_id)
+    if policy is None:
+        raise HTTPException(
+            status_code=404, detail="no redaction policy configured for this team"
+        )
+    return policy
+
+
+@router.put("/redaction-policy/{team_id}", response_model=RedactionPolicyOut)
+async def put_redaction_policy(
+    team_id: UUID,
+    body: RedactionPolicyIn,
+    db: AsyncSession = Depends(get_db),  # noqa: B008 - standard FastAPI DI pattern
+) -> RedactionPolicy:
+    policy = await get_redaction_policy(db, team_id)
+    if policy is None:
+        policy = RedactionPolicy(team_id=team_id)
+        db.add(policy)
+
+    policy.enabled_entities = body.enabled_entities
+    policy.mode = body.mode
+    await db.commit()
+    await db.refresh(policy)
+    return policy
 
 
 @router.put("/budget/{team_id}", response_model=BudgetPolicyOut)

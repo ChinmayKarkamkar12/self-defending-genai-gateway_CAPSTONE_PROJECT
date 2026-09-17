@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, LargeBinary, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -20,6 +20,11 @@ def _utcnow() -> datetime:
 class BudgetPeriod(StrEnum):
     DAILY = "daily"
     MONTHLY = "monthly"
+
+
+class RedactionMode(StrEnum):
+    MASK = "mask"
+    TOKENIZE = "tokenize"
 
 
 class Team(Base):
@@ -76,3 +81,38 @@ class BudgetPolicy(Base):
     period: Mapped[BudgetPeriod] = mapped_column(String(10), nullable=False)
     limit_usd: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     rate_limit_rps: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class RedactionPolicy(Base):
+    """Admin-configured PII redaction policy for a team. See
+    project_plan/04-pii-redaction.md §2. One active policy per team; a team
+    with no policy gets the stage's built-in default (see
+    app/core/redaction/policy.py) rather than being left unredacted, since
+    PII protection is a security control, not opt-in governance.
+    """
+
+    __tablename__ = "redaction_policies"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    team_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("teams.id"), nullable=False, unique=True
+    )
+    enabled_entities: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    mode: Mapped[RedactionMode] = mapped_column(String(10), nullable=False)
+
+
+class RedactionVault(Base):
+    """token -> encrypted original value mapping for tokenize-mode redaction.
+    See project_plan/04-pii-redaction.md §2. Encrypted at rest with Fernet
+    (app/core/redaction/vault.py); no raw value is ever stored in plaintext.
+    Schema exists so a future authenticated detokenize endpoint doesn't need
+    a migration to add - not wired up until a real use case needs it.
+    """
+
+    __tablename__ = "redaction_vault"
+
+    token: Mapped[str] = mapped_column(String(200), primary_key=True)
+    encrypted_value: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    team_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("teams.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

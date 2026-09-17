@@ -12,10 +12,19 @@ in alembic/versions/ is exercised separately, against a real Postgres.
 """
 import os
 
+# Presidio's TransformersNlpEngine imports `transformers` unconditionally at
+# package-import time, which in turn probes for a TensorFlow backend. This
+# machine's global TensorFlow install is unrelated to this project (no
+# tf/transformers dep here) and has a broken protobuf pin, so without this
+# the import chain explodes before we ever get to use spaCy. Only the spaCy
+# engine is actually used (see app/core/redaction/analyzer.py).
+os.environ.setdefault("USE_TF", "0")
+
 os.environ.setdefault("POSTGRES_DSN", "postgresql://test:test@localhost:5432/test")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
+os.environ.setdefault("REDACTION_VAULT_KEY", "CsmRGHfMdzTqw8f6YCOh6vsLs9cAxgnDuoEDsPMOrw0=")
 
 import pytest
 from fakeredis.aioredis import FakeRedis

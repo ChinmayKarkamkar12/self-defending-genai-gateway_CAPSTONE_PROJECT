@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     # See module 2 for the rationale.
     FAIL_MODE: Literal["open", "closed"] = "closed"
 
+    # Fernet key (urlsafe-base64, 32 bytes) encrypting RedactionVault values at
+    # rest for tokenize-mode PII redaction. Generate with
+    # `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
+    # Never hardcoded, never logged.
+    REDACTION_VAULT_KEY: str
+
     LOG_LEVEL: str = "INFO"
 
 
