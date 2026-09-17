@@ -4,7 +4,10 @@ Runs after the provider responds, once actual `tokens_in`/`tokens_out` are
 known - this is the authoritative accounting step, distinct from the
 pre-call estimate `budget_check_stage` uses to size its spend reservation.
 Writes a durable `UsageRecord` and reconciles the team's Redis spend counter
-from the pre-call estimate to the real cost.
+from the pre-call estimate to the real cost. Pops `ctx.metadata["budget_reservation"]`/
+`["budget_period"]` once consumed, so it's impossible for a later stage or
+the chat endpoint to accidentally call `release_reservation` again on an
+already-reconciled request and double-subtract the spend counter.
 
 An unpriced model (pricing.py hasn't been updated yet) does not block an
 already-successful response - the provider has already answered, so failing
@@ -52,6 +55,12 @@ async def usage_recording_stage(ctx: RequestContext) -> StageResult:
     policy = await get_budget_policy(db, ctx.team_id)
     if policy is not None:
         reservation = ctx.metadata.get("budget_reservation", Decimal("0"))
+        # Only pop once reconcile_reservation actually succeeds - if it
+        # raises, the reservation must still be visible in ctx.metadata so
+        # the chat endpoint's exception handler can refund it via
+        # release_reservation instead of leaking it.
         await reconcile_reservation(redis, ctx.team_id, policy.period, reservation, cost_usd)
+        ctx.metadata.pop("budget_reservation", None)
+        ctx.metadata.pop("budget_period", None)
 
     return StageResult.allow()

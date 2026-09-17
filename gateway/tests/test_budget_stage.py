@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from app.core.context import Decision, RequestContext
+from app.core.governance.budget import get_current_spend, reconcile_reservation
 from app.core.stages.budget_check import budget_check_stage
 from app.db.models import BudgetPeriod, BudgetPolicy
 
@@ -151,3 +152,46 @@ async def test_concurrent_requests_dont_overspend_budget(
 
     spend = await fake_redis.get(f"budget:{team.id}:{_today_key()}")
     assert Decimal(spend) <= limit
+
+
+async def test_concurrent_reconciles_dont_lose_updates(
+    db_session, fake_redis, seeded_team_and_key
+):
+    """Regression test for reconcile_reservation specifically, mirroring the
+    reserve-side concurrency test above.
+
+    reconcile_reservation applies a precomputed delta via a single
+    INCRBYFLOAT, not a GET-then-SET, so it should already be race-free - but
+    a naive read-modify-write reimplementation would lose updates under
+    concurrency the same way the original budget_check_stage bug did: many
+    readers see the same starting value, compute their own "corrected"
+    total independently, and the last writer wins, silently discarding every
+    other reconcile. Firing many concurrent reconciles with distinct deltas
+    and checking the final total against the exact expected sum catches
+    that regardless of which one loses.
+    """
+    team, _ = seeded_team_and_key
+    key = f"budget:{team.id}:{_today_key()}"
+    starting_spend = Decimal("5.00")
+    await fake_redis.set(key, str(starting_spend))
+
+    # each reconcile corrects a $1.00 reservation down to a distinct actual
+    # cost, so every delta is different and none can coincidentally cancel
+    # out a lost update
+    deltas = [Decimal(f"0.{i:02d}") - Decimal("1.00") for i in range(10)]
+
+    await asyncio.gather(
+        *[
+            reconcile_reservation(
+                fake_redis, team.id, BudgetPeriod.DAILY, Decimal("1.00"), Decimal(f"0.{i:02d}")
+            )
+            for i in range(10)
+        ]
+    )
+
+    final_spend = await get_current_spend(fake_redis, team.id, BudgetPeriod.DAILY)
+    expected = starting_spend + sum(deltas)
+    # INCRBYFLOAT does float arithmetic server-side, so the last few binary
+    # digits are noise, not a lost update - quantize to the same 6dp
+    # precision the rest of the system's costs are rounded to.
+    assert final_spend.quantize(Decimal("0.000001")) == expected.quantize(Decimal("0.000001"))

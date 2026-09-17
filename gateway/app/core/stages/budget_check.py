@@ -22,9 +22,21 @@ from app.core.governance.pricing import UnknownPricingError, calculate_cost
 from app.core.governance.rate_limiter import check_and_consume
 from app.core.governance.token_counter import estimate_input_tokens
 
-# Conservative worst-case output-token estimate when the request doesn't set
-# `max_tokens` - used only to size the pre-call spend reservation, never the
-# authoritative cost (that comes from the provider's own usage report).
+# Output-token estimate when the request doesn't set `max_tokens` - used only
+# to size the pre-call spend reservation, never the authoritative cost (that
+# comes from the provider's own usage report post-call).
+#
+# This is a real tuning tradeoff with no objectively correct value:
+#   - too high relative to typical response length -> concurrent requests
+#     near the budget limit can be falsely blocked, because in-flight
+#     reservations overstate what will actually be spent once reconciled.
+#   - too low relative to what a provider might actually generate when the
+#     client sets no cap of its own -> the pre-call check under-reserves,
+#     and a genuinely expensive response can push spend over budget before
+#     reconciliation catches it after the fact.
+# 1024 is a reasonable middle ground, not a measured optimum - revisit with
+# real usage data if false-blocks or budget overshoot are observed in
+# practice.
 _DEFAULT_MAX_TOKENS_ESTIMATE = 1024
 
 
