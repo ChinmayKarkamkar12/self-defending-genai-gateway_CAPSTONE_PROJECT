@@ -5,7 +5,7 @@ module reads from. See project_plan/01-repo-and-conventions.md.
 """
 from typing import Literal
 
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -52,6 +52,21 @@ class Settings(BaseSettings):
     # DEFAULT_CHECKPOINT_DIR. Set this in deployments that mount the
     # checkpoint somewhere else (project_plan/10-deployment-docker-compose.md).
     THREAT_MODEL_DIR: str = ""
+
+    # Tactical bandit (project_plan/06a-adaptive-defense-bandit.md). See
+    # app/core/defense/ for what each one does.
+    # LinUCB exploration strength: how much an arm's uncertainty counts
+    # toward its score. 0 = pure exploitation.
+    BANDIT_ALPHA: float = Field(default=0.5, ge=0.0, le=5.0)
+    # Safety mask: above this attack probability, `allow` is never an
+    # option, however the learned policy (or exploration) scores it.
+    BANDIT_ALLOW_MASK_THRESHOLD: float = Field(default=0.99, gt=0.0, le=1.0)
+    # redact_and_allow strips every window whose attack probability is at
+    # least this.
+    BANDIT_REDACT_WINDOW_THRESHOLD: float = Field(default=0.5, gt=0.0, le=1.0)
+    # Share of non-escalated decisions also queued for human review, so
+    # allow/redact/block keep getting labelled feedback.
+    BANDIT_SPOT_CHECK_RATE: float = Field(default=0.02, ge=0.0, le=1.0)
 
 
 def _load_settings(**overrides) -> Settings:

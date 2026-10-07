@@ -1,5 +1,8 @@
 # Threat classifier training (Module 5)
 
+(Module 6a's offline bandit evaluation is at the end of this file:
+[Tactical bandit evaluation](#tactical-bandit-evaluation-module-6a).)
+
 Offline fine-tuning of `microsoft/deberta-v3-base` as a 3-class classifier
 (`benign` / `prompt_injection` / `jailbreak`). The gateway loads the result from
 `training/checkpoints/final/` (see `gateway/app/core/threat/classifier.py`).
@@ -191,3 +194,171 @@ test set; ordinary imperative phrasing can score as an injection; the output
 scan misses paraphrased, translated or encoded leaks; prompts over ~4,000
 tokens are only partly scanned; long prompts are slow on CPU; the checkpoint
 isn't in git; and there's no evaluation against adaptive attacks.
+
+---
+
+# Tactical bandit evaluation (Module 6a)
+
+`training/evaluate_bandit.py` compares module 6a's contextual bandit
+(`gateway/app/core/defense/`) with static-threshold baselines on module 5's
+held-out data. It imports the gateway's own classifier, feature builder,
+bandit, safety mask and reward table, so the numbers describe the policy
+that actually runs.
+
+```bash
+gateway/.venv/Scripts/python.exe training/evaluate_bandit.py              # ~1 min after the first run
+gateway/.venv/Scripts/python.exe training/evaluate_bandit.py --external   # + the two public-data probes
+```
+
+The first run scores the val/test splits with the production classifier and
+caches the scores in `training/data/bandit_scores_*.jsonl`. Full results go to
+`training/checkpoints/bandit_eval.json` (git-ignored, like the other metrics).
+Every number below is from that file, produced on 2026-10-07 with the
+gateway's default settings (`BANDIT_ALPHA=0.5`, allow masked at ≥ 0.99,
+2% spot checks).
+
+**Reward** per request uses the documented table in
+`gateway/app/core/defense/reward.py`: allow +1 / −1, redact +0.5 / 0,
+block −0.3 / +0.5, escalate −0.1 / +0.45 (benign / attack).
+
+**Policies**
+
+| Policy | What it is |
+|---|---|
+| static@0.5 | block if attack probability ≥ 0.5, else allow |
+| static-tuned | the same, threshold tuned on the *other* split (val ↔ test): the fairest static baseline available without peeking |
+| static-hindsight | threshold tuned on the evaluation stream itself; not achievable in practice, shown as a ceiling for static policies |
+| prior-frozen | the bandit's warm-start policy with learning off (isolates what learning adds) |
+| bandit (full) | LinUCB, every decision labelled immediately (the standard bandit-evaluation upper bound) |
+| bandit (realistic) | LinUCB with production feedback only: every escalation reviewed, plus a 2% spot-check sample |
+
+## Experiment A: i.i.d. held-out data (main result)
+
+2 folds (run on test with the threshold tuned on val, and vice versa), one
+pass over the split per run with no repeated rows (so the bandit can't
+memorise individual prompts), 30 shuffled orders per fold.
+
+| Policy | Mean reward / request | Attacks allowed | Attacks redacted | Benign refused | Benign redacted | Escalations / 1k |
+|---|---|---|---|---|---|---|
+| static@0.5 | 0.722 ± 0.002 | 4.2% | 0.0% | 0.5% | 0.0% | 0 |
+| static-tuned | 0.719 ± 0.006 | 4.2% | 0.0% | 1.0% | 0.0% | 0 |
+| prior-frozen | 0.720 ± 0.004 | 4.2% | 0.2% | 0.5% | 0.5% | 4 |
+| bandit (full) | 0.714 ± 0.004 | 4.2% | 0.6% | 0.5% | 0.5% | 128 |
+| bandit (realistic) | 0.720 ± 0.004 | 4.2% | 0.3% | 0.5% | 0.5% | 7 |
+
+Tuned thresholds: 0.09 on val, 0.34 on test.
+
+**Result: a tie.** Every policy is within 0.01 of the others. Paired by
+run, bandit (realistic) minus static-tuned is +0.001 ± 0.002, better in 30
+of 60 runs, so no difference. Bandit (full) is slightly *worse* (−0.005,
+better in 0 of 60 runs). That is the cost of exploration: it escalates 128
+per 1,000 requests while trying arms, and there is nothing here for
+exploration to find.
+
+**Why nothing can be learned here: the classifier's scores are bimodal.**
+On val+test, 168 of 190 attacks score ≥ 0.999 and 195 of 200 benign prompts
+score < 0.01. The 4.2% of attacks every policy lets through (8 of 190) score
+below 0.5, 7 of them below 0.01, where they look exactly like benign
+traffic, so no policy based on the score can separate them. The two tuned thresholds (0.09 and 0.34) are far
+apart for the same reason: almost no prompts score in between, so any
+threshold there earns nearly the same reward.
+
+The same holds on data the classifier never saw (`--external`):
+
+| Probe (public data, not in training) | < 0.01 | 0.01–0.5 | 0.5–0.95 | 0.95–0.999 | ≥ 0.999 |
+|---|---|---|---|---|---|
+| Lakera/gandalf_ignore_instructions, test split (112 real injection attempts) | 14 | 2 | 1 | 20 | 75 |
+| tatsu-lab/alpaca benign instructions using "ignore / forget / pretend / instead ..." vocabulary, not in our splits (59) | 55 | 1 | 0 | 3 | 0 |
+
+**What this means:** on benchmark-like traffic the bandit matches a
+threshold tuned on labelled data, without needing a labelled tuning set; it
+starts from the warm-start prior. It can't beat that threshold, because a
+policy layer can't fix errors the classifier makes at the extremes of its
+score range. That is a classifier limit (L5-1), not a policy one.
+
+## Experiment B: base-rate shift
+
+Both splits are about 50% attacks; real traffic is mostly benign. Streams of
+1,000 requests at 10% and 2% attack rates, sampled with replacement from the
+evaluation split, 20 streams each. (Sampling with replacement repeats
+prompts, which slightly favours a learning policy; the result is a tie
+anyway.)
+
+| Attack rate | static-tuned | static-hindsight | prior-frozen | bandit (full) | bandit (realistic) |
+|---|---|---|---|---|---|
+| 10% | 0.933 ± 0.012 | 0.938 ± 0.007 | 0.936 ± 0.009 | 0.935 ± 0.009 | 0.936 ± 0.009 |
+| 2% | 0.977 ± 0.013 | 0.982 ± 0.008 | 0.980 ± 0.010 | 0.980 ± 0.009 | 0.980 ± 0.010 |
+
+Again a tie: the paired difference against static-tuned is +0.002 to
++0.003, with the bandit better in 10 of 20 runs at both rates.
+
+## Experiment C: false-positive drift (controlled simulation)
+
+This is where adaptivity can pay off: classifier errors concentrated in a
+score band, which feedback can reveal and a fixed threshold can't follow. It
+simulates L5-2, a team whose ordinary phrasing trips the classifier: 20% of
+benign requests get an injection score drawn uniformly from [0.95, 0.995],
+the band where the real false positives we measured sit ("Forget about the
+budget numbers..." 0.98; the three Alpaca false positives above at
+0.990–0.995). Everything else is real held-out data at a 10% attack rate.
+It's a genuine trade-off, not a free win: real attacks score in that band
+too (11 of 190 held-out attacks and 20 of 112 Gandalf attacks score
+0.95–0.999).
+
+| Policy | Mean reward / request | Attacks allowed | Attacks redacted | Benign refused | Benign redacted | Escalations / 1k |
+|---|---|---|---|---|---|---|
+| static-tuned | 0.697 ± 0.023 | 4.7% | 0.0% | 21.0% | 0.0% | 0 |
+| static-hindsight (ceiling) | 0.905 ± 0.010 | 7.6% | 0.0% | 2.8% | 0.0% | 0 |
+| prior-frozen | 0.700 ± 0.021 | 4.7% | 0.3% | 20.5% | 0.5% | 1 |
+| bandit (full) | **0.834 ± 0.012** | 4.7% | 6.5% | **1.4%** | 19.6% | 38 |
+| bandit (realistic, 2%) | 0.710 ± 0.024 | 4.7% | 0.4% | 19.2% | 1.8% | 8 |
+
+- **With full feedback the bandit beats the tuned threshold by
+  +0.137 ± 0.012 reward per request, in 20 of 20 runs.** It learns to
+  *redact* the drifted band instead of blocking it. Benign refusals fall
+  from 21.0% to 1.4%, and no extra attacks get through untouched (4.7%
+  either way); the attacks in that band are redacted rather than blocked
+  (6.5%). The learning curve rises across the stream: 0.805, 0.842, 0.844,
+  0.845 mean reward per quarter.
+- **Learning does this, not the prior.** prior-frozen behaves like the
+  static threshold (0.700). Bandit minus prior-frozen: +0.134, 20 of 20
+  runs.
+- **The hindsight threshold scores higher (0.905), but only with
+  hindsight.** It picks a threshold above the drifted band *using the
+  stream's own labels*, and lets 7.6% of attacks through instead of 4.7%.
+  A deployed static threshold has no way to find that value as traffic
+  changes; the bandit gets most of the way there from feedback.
+- **The production feedback rate is the bottleneck.** At 2% spot checks
+  (~28 labels per 1,000 requests) the gain is small but consistent: +0.014,
+  better in 20 of 20 runs. It scales with the labelling budget:
+
+| Spot-check rate | Labels / 1k requests | Mean reward | Benign refused |
+|---|---|---|---|
+| 2% (default) | 28 | 0.710 ± 0.024 | 19.2% |
+| 5% | 61 | 0.761 ± 0.033 | 12.2% |
+| 10% | 114 | 0.797 ± 0.025 | 6.6% |
+| 25% | 270 | 0.818 ± 0.015 | 3.1% |
+
+A deployment that suspects drift (a new team, a new app, a classifier
+update) can raise `BANDIT_SPOT_CHECK_RATE` for a while and lower it again
+once the policy settles.
+
+## Summary for the report
+
+1. **Where the classifier is right, the bandit costs nothing.** It matches
+   a tuned threshold on i.i.d. data and under base-rate shift, without a
+   labelled tuning set.
+2. **Where the classifier is systematically wrong in a score band, the
+   bandit recovers from feedback and a static threshold can't.** Against
+   static-tuned's 0.697: +0.137 reward per request with full feedback,
+   +0.100 at a 10% spot-check rate, +0.014 at the 2% default.
+3. **It can't fix errors at the extremes of the score range.** The 4–5% of
+   attacks the classifier scores as benign (almost all below 0.01) look
+   identical to benign traffic to every policy. That's the classifier's limit (L5-1); the fix is a better
+   detector, not a better policy.
+
+Simulation caveats: rewards come from the documented proxy table, not
+measured business cost; labels arrive instantly (in production they arrive
+when a reviewer gets to them); time-of-day and team-rate features are random
+noise offline; Experiment C's drift band is constructed (from measured
+examples), not observed traffic.

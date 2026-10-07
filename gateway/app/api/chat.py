@@ -21,6 +21,7 @@ from app.core.pipeline import (
     PRE_CALL_STAGES,
     StageFailure,
     run_audit_log,
+    run_defense_feedback,
     run_stages,
     run_usage_recording,
 )
@@ -75,6 +76,7 @@ async def chat_completions(
     ctx = RequestContext(body=body, api_key_id=api_key.id, team_id=api_key.team_id)
     ctx.metadata["db"] = db
     ctx.metadata["redis"] = redis
+    ctx.metadata["request_id"] = request_id
 
     try:
         pre_result = await run_stages(PRE_CALL_STAGES, ctx)
@@ -109,6 +111,13 @@ async def chat_completions(
 
     try:
         post_result = await run_stages(POST_CALL_STAGES, ctx)
+    except StageFailure:
+        raise HTTPException(status_code=503, detail=PIPELINE_UNAVAILABLE_DETAIL) from None
+
+    # Runs before acting on post_result: a response output_scan blocks is
+    # the case the bandit most needs to hear about.
+    try:
+        await run_defense_feedback(ctx)
     except StageFailure:
         raise HTTPException(status_code=503, detail=PIPELINE_UNAVAILABLE_DETAIL) from None
 

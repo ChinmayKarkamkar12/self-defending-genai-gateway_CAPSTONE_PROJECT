@@ -67,6 +67,8 @@ ruff check .
 
 ## Status
 
-🚧 Module 1 (repo skeleton & conventions) complete. See
+🚧 Modules 1–5 and 6a (tactical adaptive defense) complete. See
+[`PROGRESS.md`](PROGRESS.md) for module-by-module status,
+[`LIMITATIONS.md`](LIMITATIONS.md) for known limitations, and
 [`project_plan/11-build-roadmap.md`](project_plan/11-build-roadmap.md) for
 what's next.

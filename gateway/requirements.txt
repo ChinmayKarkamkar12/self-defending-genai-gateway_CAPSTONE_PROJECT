@@ -24,6 +24,9 @@ spacy>=3.8,<3.9
 # spacy>=3.8.0,<3.9.0, hence the pin above.
 en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 cryptography
+# Module 6a's LinUCB bandit (app/core/defense/bandit.py). Already pulled in by
+# torch/transformers; listed because the gateway now imports it directly.
+numpy>=2.0,<3
 
 # Module 5 (threat detection classifier): runtime inference deps for
 # app/core/threat/classifier.py. Pinned so local, CI and Docker all run the

@@ -6,8 +6,21 @@ import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
+from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, LargeBinary, Numeric, String
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    LargeBinary,
+    Numeric,
+    String,
+    Text,
+)
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -25,6 +38,46 @@ class BudgetPeriod(StrEnum):
 class RedactionMode(StrEnum):
     MASK = "mask"
     TOKENIZE = "tokenize"
+
+
+class DefenseAction(StrEnum):
+    """The tactical bandit's action space. See project_plan/06a-adaptive-defense-bandit.md §2."""
+
+    ALLOW = "allow"
+    REDACT_AND_ALLOW = "redact_and_allow"
+    BLOCK = "block"
+    ESCALATE_TO_HUMAN = "escalate_to_human"
+
+
+class ThreatLabel(StrEnum):
+    ATTACK = "attack"
+    BENIGN = "benign"
+
+
+class ReviewStatus(StrEnum):
+    PENDING = "pending"
+    REVIEWED = "reviewed"
+
+
+class ReviewReason(StrEnum):
+    # The bandit chose escalate_to_human; the request was blocked pending review.
+    ESCALATION = "escalation"
+    # A random sample of an allow/redact/block decision, queued so the arms
+    # the bandit didn't escalate still get labelled feedback. The request
+    # itself was already handled by the chosen action.
+    SPOT_CHECK = "spot_check"
+
+
+class RewardSource(StrEnum):
+    HUMAN_REVIEW = "human_review"
+    # Post-call evidence: an allowed request's response leaked the system
+    # prompt, so the request was an attack. See app/core/defense/feedback.py.
+    OUTPUT_SCAN = "output_scan"
+
+
+# JSONB on Postgres (as the module plan specifies), plain JSON elsewhere so
+# the SQLite-backed test suite can create the same tables.
+_JSONB = JSON().with_variant(JSONB(), "postgresql")
 
 
 class Team(Base):
@@ -128,3 +181,84 @@ class RedactionVault(Base):
     # a retention job can be added without a migration, same rationale as
     # the table itself.
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ThreatEvent(Base):
+    """One tactical-bandit decision. See project_plan/06a-adaptive-defense-bandit.md §4.
+
+    Never holds prompt text: only the classifier's probabilities, the
+    numeric feature vector the bandit saw, and what it did. The feature
+    vector is built from counts and scores (PII is an entity *count*), so
+    nothing here can carry a raw PII value.
+    """
+
+    __tablename__ = "threat_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    request_id: Mapped[uuid.UUID] = mapped_column(nullable=False, index=True)
+    team_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("teams.id"), nullable=False)
+    api_key_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("api_keys.id"), nullable=False)
+    threat_score: Mapped[dict[str, Any]] = mapped_column(_JSONB, nullable=False)
+    context_features: Mapped[dict[str, Any]] = mapped_column(_JSONB, nullable=False)
+    # Bumped whenever app/core/defense/features.py's FEATURE_NAMES changes,
+    # so a delayed reward never updates the bandit with a vector built
+    # under a different feature layout.
+    feature_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Per-arm estimate, uncertainty and adjusted score at decision time -
+    # what module 8 plots as the bandit's confidence bounds.
+    arm_scores: Mapped[dict[str, Any]] = mapped_column(_JSONB, nullable=False)
+    action_taken: Mapped[DefenseAction] = mapped_column(String(20), nullable=False)
+    bandit_confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    escalation_bias: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    reward_applied: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reward_source: Mapped[RewardSource | None] = mapped_column(String(20), nullable=True)
+    rewarded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    human_label: Mapped[ThreatLabel | None] = mapped_column(String(10), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )
+
+
+class ReviewQueueItem(Base):
+    """A ThreatEvent waiting for (or given) a human attack/benign verdict.
+    See project_plan/06a-adaptive-defense-bandit.md §4.
+
+    `prompt_excerpt` is the conversation text *after* module 4's PII
+    redaction - the reviewer needs something to judge, and this is the same
+    text that would have gone upstream. Raw PII is never stored here.
+    """
+
+    __tablename__ = "review_queue_items"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    threat_event_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("threat_events.id"), nullable=False, unique=True
+    )
+    reason: Mapped[ReviewReason] = mapped_column(String(20), nullable=False)
+    status: Mapped[ReviewStatus] = mapped_column(
+        String(10), nullable=False, default=ReviewStatus.PENDING, index=True
+    )
+    prompt_excerpt: Mapped[str] = mapped_column(Text, nullable=False)
+    reviewer: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    decision: Mapped[ThreatLabel | None] = mapped_column(String(10), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    threat_event: Mapped["ThreatEvent"] = relationship()
+
+
+class BanditState(Base):
+    """Persisted LinUCB parameters, so learning survives restarts. One row
+    per named policy (only "default" today). `version` increments on every
+    update; each gateway process caches the parameters and reloads them
+    when the version it holds is stale. See app/core/defense/store.py.
+    """
+
+    __tablename__ = "bandit_state"
+
+    name: Mapped[str] = mapped_column(String(50), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    params: Mapped[dict[str, Any]] = mapped_column(_JSONB, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )

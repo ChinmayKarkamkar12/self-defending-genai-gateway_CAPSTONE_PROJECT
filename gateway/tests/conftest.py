@@ -23,12 +23,17 @@ from fakeredis.aioredis import FakeRedis
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.config import settings
 from app.core.auth import hash_key
+from app.core.defense.store import bandit_store
 from app.core.governance.redis_client import get_redis
+from app.core.stages import bandit_policy
 from app.core.stages.threat_detection import system_prompt_cache
 from app.core.threat.classifier import (
     ScanResult,
     ThreatScore,
+    WindowScan,
+    WindowSpan,
     reset_threat_classifier,
     set_threat_classifier,
 )
@@ -62,6 +67,17 @@ class FakeThreatClassifier:
         self.seen_texts.extend(texts)
         return ScanResult(score=self._fixed_score, windows=len(texts), truncated=False)
 
+    def scan_windows(self, text: str) -> WindowScan:
+        """One window covering the whole text, scored like `score_texts`.
+        Tests that need several windows (test_strip.py) use their own fake."""
+        if not text:
+            return WindowScan(windows=[], unscanned_from=None)
+        attack = 1.0 - self._fixed_score.benign
+        return WindowScan(
+            windows=[WindowSpan(start=0, end=len(text), attack_probability=attack)],
+            unscanned_from=None,
+        )
+
 
 @pytest.fixture(autouse=True)
 def fake_threat_classifier():
@@ -72,6 +88,19 @@ def fake_threat_classifier():
     yield
     reset_threat_classifier()
     system_prompt_cache.clear()
+
+
+@pytest.fixture(autouse=True)
+def isolated_bandit(monkeypatch):
+    """Every test starts from the warm-start prior (no cached parameters
+    from an earlier test) with spot-check sampling off, so a random 2%
+    sample can't add review items to tests that don't expect them. Tests of
+    the sampling itself set BANDIT_SPOT_CHECK_RATE explicitly."""
+    bandit_store.reset()
+    monkeypatch.setattr(settings, "BANDIT_SPOT_CHECK_RATE", 0.0)
+    bandit_policy.spot_check_rng.seed(0)
+    yield
+    bandit_store.reset()
 
 
 @pytest.fixture

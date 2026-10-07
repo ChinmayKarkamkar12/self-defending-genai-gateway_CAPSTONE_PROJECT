@@ -6,6 +6,7 @@ from fastapi import FastAPI
 
 from app.api.admin import router as admin_router
 from app.api.chat import router as chat_router
+from app.api.defense_admin import router as defense_admin_router
 from app.config import settings
 from app.core.threat.classifier import get_threat_classifier
 
@@ -32,6 +33,7 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="Self-Defending GenAI Gateway", version="0.1.0", lifespan=lifespan)
 app.include_router(chat_router)
 app.include_router(admin_router)
+app.include_router(defense_admin_router)
 
 
 @app.get("/health")

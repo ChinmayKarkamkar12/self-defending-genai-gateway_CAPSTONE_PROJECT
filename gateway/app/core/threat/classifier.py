@@ -61,6 +61,22 @@ class ScanResult:
     truncated: bool
 
 
+@dataclass(frozen=True)
+class WindowSpan:
+    """One scored window: character offsets into the text, and its
+    attack probability (1 - benign)."""
+
+    start: int
+    end: int
+    attack_probability: float
+
+
+@dataclass(frozen=True)
+class WindowScan:
+    windows: list[WindowSpan]
+    unscanned_from: int | None
+
+
 class ThreatClassifier:
     """Loads a fine-tuned 3-class DeBERTa checkpoint and scores text.
 
@@ -102,33 +118,10 @@ class ThreatClassifier:
     def score(self, text: str) -> ThreatScore:
         return self.score_texts([text]).score
 
-    def score_texts(self, texts: list[str]) -> "ScanResult":
-        """Score every window of every text and return the most suspicious one.
-
-        Each text is split into overlapping windows of WINDOW_TOKENS (the
-        training sequence length), so an injection can't hide past a
-        truncation point behind padding. Texts are windowed separately, so a
-        window never straddles two messages. The returned score is the
-        full distribution of the window with the lowest `benign`
-        probability - still a valid distribution, unlike a per-class max.
-        """
-        windows: list[list[int]] = []
-        for text in texts:
-            ids = self._tokenizer(text or "", add_special_tokens=False)["input_ids"]
-            start = 0
-            while True:
-                windows.append(ids[start : start + WINDOW_TOKENS])
-                if start + WINDOW_TOKENS >= len(ids):
-                    break
-                start += WINDOW_STRIDE
-        if not windows:
-            windows = [[]]
-
-        truncated = len(windows) > MAX_WINDOWS
-        windows = windows[:MAX_WINDOWS]
-
+    def _window_probs(self, windows: list[list[int]]) -> list[list[float]]:
+        """Class probabilities for each window of token ids, in order."""
         tok = self._tokenizer
-        best: list[float] | None = None
+        out: list[list[float]] = []
         with self._torch.inference_mode():
             for i in range(0, len(windows), INFERENCE_BATCH_SIZE):
                 batch = [
@@ -142,11 +135,76 @@ class ThreatClassifier:
                     input_ids=self._torch.tensor(input_ids, device=self._device),
                     attention_mask=self._torch.tensor(attention, device=self._device),
                 ).logits
-                for probs in self._torch.softmax(logits, dim=-1).tolist():
-                    if best is None or probs[0] < best[0]:
-                        best = probs
+                out.extend(self._torch.softmax(logits, dim=-1).tolist())
+        return out
+
+    def score_texts(self, texts: list[str]) -> "ScanResult":
+        """Score every window of every text and return the most suspicious one.
+
+        Each text is split into overlapping windows of WINDOW_TOKENS (the
+        training sequence length), so an injection can't hide past a
+        truncation point behind padding. Texts are windowed separately, so a
+        window never straddles two messages. The returned score is the
+        full distribution of the window with the lowest `benign`
+        probability - still a valid distribution, unlike a per-class max.
+        """
+        windows: list[list[int]] = []
+        for text in texts:
+            ids = self._tokenizer(text or "", add_special_tokens=False)["input_ids"]
+            windows.extend(ids[start : start + WINDOW_TOKENS] for start in window_starts(len(ids)))
+        if not windows:
+            windows = [[]]
+
+        truncated = len(windows) > MAX_WINDOWS
+        windows = windows[:MAX_WINDOWS]
+
+        best: list[float] | None = None
+        for probs in self._window_probs(windows):
+            if best is None or probs[0] < best[0]:
+                best = probs
         score = ThreatScore(**dict(zip(LABELS, best, strict=True)))
         return ScanResult(score=score, windows=len(windows), truncated=truncated)
+
+    def scan_windows(self, text: str) -> "WindowScan":
+        """Per-window attack probabilities for one text, with each window's
+        character span - what module 6a's redact_and_allow action uses to
+        decide what to cut. Windows past MAX_WINDOWS aren't scored;
+        `unscanned_from` is the character offset where that unscanned tail
+        begins (None if the whole text was scanned).
+        """
+        encoding = self._tokenizer(
+            text or "", add_special_tokens=False, return_offsets_mapping=True
+        )
+        ids, offsets = encoding["input_ids"], encoding["offset_mapping"]
+        if not ids:
+            return WindowScan(windows=[], unscanned_from=None)
+
+        starts = window_starts(len(ids))
+        truncated = len(starts) > MAX_WINDOWS
+        starts = starts[:MAX_WINDOWS]
+        probs = self._window_probs([ids[s : s + WINDOW_TOKENS] for s in starts])
+
+        windows = []
+        for start, window_probs in zip(starts, probs, strict=True):
+            last = min(start + WINDOW_TOKENS, len(ids)) - 1
+            windows.append(
+                WindowSpan(
+                    start=offsets[start][0],
+                    end=offsets[last][1],
+                    attack_probability=1.0 - window_probs[0],
+                )
+            )
+        unscanned_from = offsets[starts[-1] + WINDOW_TOKENS][0] if truncated else None
+        return WindowScan(windows=windows, unscanned_from=unscanned_from)
+
+
+def window_starts(n_tokens: int) -> list[int]:
+    """Token offsets where each WINDOW_TOKENS-long window begins. Always at
+    least one window, even for empty text."""
+    starts = [0]
+    while starts[-1] + WINDOW_TOKENS < n_tokens:
+        starts.append(starts[-1] + WINDOW_STRIDE)
+    return starts
 
 
 _classifier: ThreatClassifier | None = None

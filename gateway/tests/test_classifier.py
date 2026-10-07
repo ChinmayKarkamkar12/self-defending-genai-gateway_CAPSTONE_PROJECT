@@ -89,3 +89,37 @@ def test_short_text_matches_plain_forward_pass(real_classifier):
         expected = torch.softmax(clf._model(**inputs).logits, dim=-1)[0, 1].item()
 
     assert abs(clf.score_texts([INJECTION]).score.prompt_injection - expected) < 1e-5
+
+
+def test_scan_windows_locates_the_injection(real_classifier):
+    # Module 6a's redact_and_allow cuts flagged windows; the flagged span
+    # must actually contain the injection, and the padding alone mustn't
+    # be flagged.
+    text = PADDING + INJECTION + " " + PADDING
+    scan = real_classifier.scan_windows(text)
+
+    assert len(scan.windows) > 1
+    assert scan.unscanned_from is None
+    flagged = [w for w in scan.windows if w.attack_probability > 0.5]
+    assert flagged
+    start = text.index(INJECTION)
+    assert any(w.start <= start and start + len(INJECTION) <= w.end for w in flagged)
+    assert max(w.attack_probability for w in real_classifier.scan_windows(PADDING).windows) < 0.5
+
+
+def test_scan_windows_matches_score_texts(real_classifier):
+    text = PADDING + INJECTION
+    scan = real_classifier.scan_windows(text)
+    result = real_classifier.score_texts([text])
+
+    assert len(scan.windows) == result.windows
+    top = max(w.attack_probability for w in scan.windows)
+    assert abs(top - (1.0 - result.score.benign)) < 1e-6
+
+
+def test_scan_windows_reports_unscanned_tail(real_classifier):
+    text = PADDING * 20
+    scan = real_classifier.scan_windows(text)
+
+    assert scan.unscanned_from is not None
+    assert 0 < scan.unscanned_from < len(text)

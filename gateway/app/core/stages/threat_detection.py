@@ -3,8 +3,8 @@ project_plan/05-threat-detection-classifier.md §4.
 
 ARCHITECTURAL INVARIANT, not a style choice: this stage always returns
 ALLOW, regardless of the score it computes. It produces a trustworthy
-score and nothing else - module 6's bandit stage (which runs immediately
-after this one in PRE_CALL_STAGES, see app/core/pipeline.py) is the only
+score and nothing else - module 6a's bandit stage (which runs later in
+PRE_CALL_STAGES, after PII redaction - see app/core/pipeline.py) is the only
 place that turns a threat score into an actual block/allow/redact
 decision. Collapsing that boundary here would let this classifier's output
 short-circuit the judgment call module 6 is supposed to own. Enforced by
