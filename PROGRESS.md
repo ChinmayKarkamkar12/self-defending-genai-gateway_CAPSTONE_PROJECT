@@ -111,6 +111,7 @@
     - redact_and_allow inside the image (CPU torch, real model): on a padded injection it cut 1 window, the injection was gone, 77% of the text was kept, the system message was untouched, and the stripped text re-scored 0.009.
   - New dependency: `numpy>=2.0,<3` listed explicitly in `gateway/requirements.txt` (was already installed transitively via torch/transformers).
   - New settings (all optional, defaults in `app/config.py`): `BANDIT_ALPHA` (0.5), `BANDIT_ALLOW_MASK_THRESHOLD` (0.99), `BANDIT_REDACT_WINDOW_THRESHOLD` (0.5), `BANDIT_SPOT_CHECK_RATE` (0.02).
+  - **Pushed to `origin/main` on 2026-10-07** (commit `cce8e44`, authored by Chinmay, no Claude co-author trailer). Real GitHub Actions run on `cce8e44`: **success** (https://github.com/ChinmayKarkamkar12/self-defending-genai-gateway_CAPSTONE_PROJECT/actions/runs/37662449218).
   - Known limitations L6a-1 to L6a-9 are in `LIMITATIONS.md`; L5-2's entry was updated to point at 6a's evidence.
 
 ## In progress
