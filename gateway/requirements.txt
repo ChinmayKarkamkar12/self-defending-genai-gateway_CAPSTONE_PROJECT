@@ -12,12 +12,17 @@ tiktoken
 # GLiNER/HuggingFace NER recognizers at package-import time, which pulls in
 # `transformers` regardless of whether they're used. We only use the spaCy
 # engine (see app/core/redaction/analyzer.py) and don't want a transformers/
-# torch dependency for this module. Run `python -m spacy download
-# en_core_web_sm` once after installing requirements — the model isn't a
-# normal PyPI package and can't be pinned here.
+# torch dependency for this module.
 presidio-analyzer==2.2.33
 presidio-anonymizer
-spacy
+spacy>=3.8,<3.9
+# spaCy model for Presidio, installed as a pinned wheel straight from the
+# spaCy release, not via `python -m spacy download`. That command first
+# fetches a compatibility file from raw.githubusercontent.com with no retry,
+# and intermittently failed Docker builds with a ConnectionError. pip retries
+# downloads, and CI's pip cache can cache this. The model requires
+# spacy>=3.8.0,<3.9.0, hence the pin above.
+en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 cryptography
 
 # Module 5 (threat detection classifier): runtime inference deps for
