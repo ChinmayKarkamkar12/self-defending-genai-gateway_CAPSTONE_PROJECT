@@ -181,3 +181,13 @@ linearly with prompt length: at the 32-window cap, a CPU-only deployment
 would spend several seconds per request. Use a GPU (or the optional ONNX
 export) for anything beyond a demo, or lower `MAX_WINDOWS` in
 `classifier.py` on CPU-only hosts.
+
+## Known limitations
+
+Module 5's limitations (L5-1 to L5-7) are tracked in the project-wide register
+[`LIMITATIONS.md`](../LIMITATIONS.md), together with what each one needs before
+it can be fixed. In short: injection F1 only just meets its target on a small
+test set; ordinary imperative phrasing can score as an injection; the output
+scan misses paraphrased, translated or encoded leaks; prompts over ~4,000
+tokens are only partly scanned; long prompts are slow on CPU; the checkpoint
+isn't in git; and there's no evaluation against adaptive attacks.

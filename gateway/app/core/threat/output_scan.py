@@ -14,6 +14,12 @@ Two independent, purely text-based checks against the provider's response:
 Both checks only ever look at text already present in the request/response
 - never RedactionVault - so this module structurally cannot reintroduce
 raw PII, independent of whatever module 4 does.
+
+KNOWN LIMITATION: the system-prompt check only catches verbatim word runs.
+A model that paraphrases, translates, summarises, or encodes (e.g. base64)
+its instructions before revealing them is not detected - that would need
+semantic similarity or a second model. See training/README.md "Known
+limitations".
 """
 import re
 from typing import Any

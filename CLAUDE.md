@@ -25,7 +25,7 @@ Module order:
 2. **Work from exactly one module file at a time.** I will tell you which one (e.g. "read `../project_plan/03-cost-usage-governance.md` and implement it"). Don't jump ahead to a module whose dependencies (listed at the top of each module file) aren't met yet.
 3. **Follow the module file's own task list in order**, and run the tests in its "Test plan" section before considering anything done.
 4. **Don't mark a module complete unless its "Definition of done" checklist genuinely passes** — actually run the commands, don't just assume.
-5. **At the end of every session:** update `PROGRESS.md` — what got finished, what's partially done, and anything the next session needs to know (a blocker, a decision made, a TODO).
+5. **At the end of every session:** update `LIMITATIONS.md` if a known limitation was added, unblocked, or resolved (mark it `Resolved`, never delete it), and update `PROGRESS.md` — what got finished, what's partially done, and anything the next session needs to know (a blocker, a decision made, a TODO).
 6. **Commit to git after finishing a module's Definition of Done**, with a message like `module 3: cost and usage governance complete`. Don't leave work uncommitted across sessions.
 
 ## Hard rules — do not deviate from these without being asked
