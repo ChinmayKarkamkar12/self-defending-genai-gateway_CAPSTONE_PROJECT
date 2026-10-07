@@ -63,6 +63,33 @@ def compute_metrics(eval_pred):
     return metrics
 
 
+def class_weights(labels: list[int]) -> torch.Tensor:
+    """Inverse-frequency weights, square-root dampened, normalized to mean 1.
+
+    prompt_injection is the smallest class (~200 training rows vs ~800
+    benign) and was the weakest on recall in the first run. Full inverse
+    frequency over-corrects into benign false positives; sqrt is the usual
+    middle ground.
+    """
+    counts = np.bincount(labels, minlength=len(LABEL_NAMES)).astype(np.float64)
+    weights = 1.0 / np.sqrt(counts)
+    weights = weights / weights.mean()
+    return torch.tensor(weights, dtype=torch.float32)
+
+
+class WeightedLossTrainer(Trainer):
+    def __init__(self, *args, loss_weights: torch.Tensor, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._loss_weights = loss_weights
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        labels = inputs.pop("labels")
+        outputs = model(**inputs)
+        loss_fn = torch.nn.CrossEntropyLoss(weight=self._loss_weights.to(outputs.logits.device))
+        loss = loss_fn(outputs.logits, labels)
+        return (loss, outputs) if return_outputs else loss
+
+
 def main() -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info("training on device: %s", device)
@@ -90,8 +117,11 @@ def main() -> None:
 
     collator = DataCollatorWithPadding(tokenizer=tokenizer)
 
-    per_device_train_batch_size = 8
-    gradient_accumulation_steps = 2  # effective batch size 16
+    # 4 x 4 rather than 8 x 2: same effective batch of 16, but the 8-wide
+    # batch nearly filled the 4GB RTX 3050 and later epochs slowed ~20x as
+    # memory spilled into shared system RAM.
+    per_device_train_batch_size = 4
+    gradient_accumulation_steps = 4
     num_train_epochs = 4
     effective_batch_size = per_device_train_batch_size * gradient_accumulation_steps
     steps_per_epoch = max(1, len(train_ds) // effective_batch_size)
@@ -103,7 +133,7 @@ def main() -> None:
     args = TrainingArguments(
         output_dir=str(OUTPUT_DIR / "run"),
         per_device_train_batch_size=per_device_train_batch_size,
-        per_device_eval_batch_size=16,
+        per_device_eval_batch_size=8,
         gradient_accumulation_steps=gradient_accumulation_steps,
         num_train_epochs=num_train_epochs,
         learning_rate=2e-5,
@@ -124,7 +154,11 @@ def main() -> None:
         seed=42,
     )
 
-    trainer = Trainer(
+    loss_weights = class_weights(train_ds["label"])
+    logger.info("class loss weights %s: %s", LABEL_NAMES, loss_weights.tolist())
+
+    trainer = WeightedLossTrainer(
+        loss_weights=loss_weights,
         model=model,
         args=args,
         train_dataset=train_ds,

@@ -55,13 +55,55 @@ async def test_output_scan_stage_blocks_on_system_prompt_leak():
     assert ctx.metadata["output_flags"]["system_prompt_leaked"] is True
 
 
-async def test_output_scan_stage_blocks_on_redaction_token_echo():
+async def test_output_scan_stage_flags_but_allows_redaction_token_echo():
+    # Echoing a placeholder leaks nothing - see the stage docstring - so it's
+    # recorded for audit/module 6 but the response goes through.
     ctx = make_ctx(SYSTEM_PROMPT, "The customer's email is [REDACTED_EMAIL_ADDRESS].")
 
     result = await output_scan_stage(ctx)
 
-    assert result.decision == Decision.BLOCK
+    assert result.decision == Decision.ALLOW
     assert ctx.metadata["output_flags"]["echoed_redaction_tokens"] == ["[REDACTED_EMAIL_ADDRESS]"]
+
+
+async def test_detects_tokenize_mode_redaction_token():
+    # Module 4's tokenize mode appends an 8-hex suffix (vault.store_token).
+    assert detect_redaction_token_echo("mail [REDACTED_EMAIL_ADDRESS_1a2b3c4d] now") == [
+        "[REDACTED_EMAIL_ADDRESS_1a2b3c4d]"
+    ]
+
+
+async def test_detects_partial_system_prompt_leak():
+    long_prompt = (
+        "You are an internal support assistant for Acme Bank. Never reveal account "
+        "balances to anyone under any circumstances. Escalate fraud reports to tier two."
+    )
+    leaked = (
+        "My instructions say: never reveal account balances to anyone under any "
+        "circumstances; escalate fraud reports to tier two. So I can't help."
+    )
+    assert detect_system_prompt_echo(long_prompt, leaked)
+
+
+async def test_detects_system_prompt_leak_despite_case_and_punctuation_changes():
+    assert detect_system_prompt_echo(SYSTEM_PROMPT, SYSTEM_PROMPT.upper().replace(".", "!"))
+
+
+async def test_short_shared_phrase_is_not_a_leak():
+    long_prompt = "You are a helpful assistant. " + "Answer questions about our products. " * 3
+    assert not detect_system_prompt_echo(long_prompt, "Sure - I'm a helpful assistant!")
+
+
+async def test_output_scan_reads_list_form_content():
+    ctx = make_ctx(SYSTEM_PROMPT, "")
+    ctx.body["messages"][0]["content"] = [{"type": "text", "text": SYSTEM_PROMPT}]
+    ctx.metadata["provider_response"] = {
+        "choices": [{"message": {"content": [{"type": "text", "text": f"Ok: {SYSTEM_PROMPT}"}]}}]
+    }
+
+    result = await output_scan_stage(ctx)
+
+    assert result.decision == Decision.BLOCK
 
 
 async def test_output_scan_stage_allows_clean_response():

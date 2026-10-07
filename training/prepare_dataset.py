@@ -19,6 +19,8 @@ Writes train.jsonl / val.jsonl / test.jsonl / stats.json to training/data/.
 import json
 import logging
 import random
+import re
+from collections import defaultdict
 from pathlib import Path
 
 from datasets import load_dataset
@@ -41,6 +43,10 @@ LABEL_NAMES = {
 # swamp the two attack classes (each a few hundred examples) by orders of
 # magnitude. See the benign-capping step below for the final balancing pass.
 ALPACA_SAMPLE_SIZE = 900
+
+# Near-duplicate grouping for the split - see near_duplicate_groups().
+SHINGLE_SIZE = 8
+NEAR_DUP_THRESHOLD = 0.5
 
 
 def _dedupe(rows: list[dict]) -> list[dict]:
@@ -97,22 +103,79 @@ def load_alpaca_benign(rng: random.Random, sample_size: int) -> list[dict]:
     return rows
 
 
-def stratified_split(
+def _shingles(text: str, k: int = SHINGLE_SIZE) -> set[str]:
+    words = re.sub(r"\W+", " ", text.lower()).split()
+    return {" ".join(words[i : i + k]) for i in range(max(1, len(words) - k + 1))}
+
+
+def near_duplicate_groups(rows: list[dict]) -> list[list[dict]]:
+    """Cluster rows whose word 8-gram sets overlap by >= NEAR_DUP_THRESHOLD
+    (relative to the smaller row), via union-find over an inverted index.
+
+    The jailbreak datasets in particular reuse the same templates with small
+    edits ("DAN" variants etc.). An exact-text dedupe leaves those in, and a
+    plain random split then puts near-copies on both sides of train/test -
+    which measurably inflated the first run's test scores (see
+    training/README.md). Splitting whole groups keeps every near-copy on one
+    side.
+    """
+    shingles = [_shingles(row["text"]) for row in rows]
+    parent = list(range(len(rows)))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    index: dict[str, list[int]] = defaultdict(list)
+    for i, s in enumerate(shingles):
+        for sh in s:
+            index[sh].append(i)
+
+    for i, s in enumerate(shingles):
+        overlap: dict[int, int] = defaultdict(int)
+        for sh in s:
+            for j in index[sh]:
+                if j > i:
+                    overlap[j] += 1
+        for j, shared in overlap.items():
+            if shared / min(len(s), len(shingles[j])) >= NEAR_DUP_THRESHOLD:
+                parent[find(i)] = find(j)
+
+    groups: dict[int, list[dict]] = defaultdict(list)
+    for i, row in enumerate(rows):
+        groups[find(i)].append(row)
+    return list(groups.values())
+
+
+def grouped_stratified_split(
     rows: list[dict], rng: random.Random, val_frac: float = 0.1, test_frac: float = 0.1
 ):
-    by_label: dict[int, list[dict]] = {}
-    for row in rows:
-        by_label.setdefault(row["label"], []).append(row)
+    """Stratified by label, but assigns whole near-duplicate groups to a
+    single split. A group's label for stratification is its majority label."""
+    by_label: dict[int, list[list[dict]]] = defaultdict(list)
+    for group in near_duplicate_groups(rows):
+        majority = max({r["label"] for r in group}, key=[r["label"] for r in group].count)
+        by_label[majority].append(group)
 
     train, val, test = [], [], []
-    for group in by_label.values():
-        rng.shuffle(group)
-        n = len(group)
-        n_val = max(1, int(n * val_frac))
-        n_test = max(1, int(n * test_frac))
-        val.extend(group[:n_val])
-        test.extend(group[n_val : n_val + n_test])
-        train.extend(group[n_val + n_test :])
+    for groups in by_label.values():
+        rng.shuffle(groups)
+        n = sum(len(g) for g in groups)
+        val_target, test_target = n * val_frac, n * test_frac
+        n_val = n_test = 0
+        # A group only goes to val/test if it fits within 120% of the
+        # target, so one huge template cluster can't swallow a whole split.
+        for group in groups:
+            if n_val + len(group) <= val_target * 1.2 and n_val < val_target:
+                val.extend(group)
+                n_val += len(group)
+            elif n_test + len(group) <= test_target * 1.2 and n_test < test_target:
+                test.extend(group)
+                n_test += len(group)
+            else:
+                train.extend(group)
     rng.shuffle(train)
     rng.shuffle(val)
     rng.shuffle(test)
@@ -148,7 +211,7 @@ def main() -> None:
     benign_rows = benign_pool[:benign_target]
 
     all_rows = _dedupe(injection_rows + jailbreak_rows + benign_rows)
-    train, val, test = stratified_split(all_rows, rng)
+    train, val, test = grouped_stratified_split(all_rows, rng)
 
     write_jsonl(DATA_DIR / "train.jsonl", train)
     write_jsonl(DATA_DIR / "val.jsonl", val)

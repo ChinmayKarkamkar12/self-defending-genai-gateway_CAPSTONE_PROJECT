@@ -168,3 +168,25 @@ async def test_malformed_input_crash_never_leaks_raw_text(db_session, seeded_tea
 
     # A failed redaction must never have written anything to metadata.
     assert "redaction_map" not in ctx.metadata
+
+
+async def test_list_form_content_is_redacted(db_session, seeded_team_and_key):
+    # The same PII sent as an OpenAI content-parts list must not reach the
+    # provider unredacted. Non-text parts pass through untouched.
+    team, api_key = seeded_team_and_key
+    email = "jane.smith@example.com"
+    image_part = {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}}
+    ctx = make_ctx(team.id, api_key.id, db_session, "")
+    ctx.body["messages"][0]["content"] = [
+        {"type": "text", "text": f"Email me at {email}."},
+        image_part,
+    ]
+
+    result = await pii_redaction_stage(ctx)
+
+    assert result.decision == Decision.MODIFY
+    parts = result.modified_body["messages"][0]["content"]
+    assert email not in parts[0]["text"]
+    assert "[REDACTED_EMAIL_ADDRESS]" in parts[0]["text"]
+    assert parts[1] == image_part
+    assert ctx.metadata["redaction_map"]["EMAIL_ADDRESS"] == 1

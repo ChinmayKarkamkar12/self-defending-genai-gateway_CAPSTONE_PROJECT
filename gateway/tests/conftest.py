@@ -25,7 +25,12 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.auth import hash_key
 from app.core.governance.redis_client import get_redis
-from app.core.threat.classifier import ThreatScore, reset_threat_classifier, set_threat_classifier
+from app.core.threat.classifier import (
+    ScanResult,
+    ThreatScore,
+    reset_threat_classifier,
+    set_threat_classifier,
+)
 from app.db.base import Base
 from app.db.models import ApiKey, Team
 from app.db.session import get_db
@@ -47,8 +52,14 @@ class FakeThreatClassifier:
             benign=1.0, prompt_injection=0.0, jailbreak=0.0
         )
 
+        self.seen_texts: list[str] = []
+
     def score(self, text: str) -> ThreatScore:  # noqa: ARG002 - fixed regardless of input
         return self._fixed_score
+
+    def score_texts(self, texts: list[str]) -> ScanResult:
+        self.seen_texts.extend(texts)
+        return ScanResult(score=self._fixed_score, windows=len(texts), truncated=False)
 
 
 @pytest.fixture(autouse=True)

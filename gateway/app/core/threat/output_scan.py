@@ -3,11 +3,13 @@ project_plan/05-threat-detection-classifier.md §4.
 
 Two independent, purely text-based checks against the provider's response:
 
-  1. System-prompt echo - does the response contain the request's system
-     prompt verbatim (ignoring incidental whitespace differences)?
-  2. Redaction-token echo - does the response contain a `[REDACTED_<TYPE>]`
-     placeholder (module 4's mask-mode token), which would mean the model
-     echoed back a token it was never supposed to treat as live content?
+  1. System-prompt leak - does the response reproduce the request's system
+     prompt, in full or as a long verbatim run of its words? Comparison is
+     on lowercased word sequences, so case, punctuation, and whitespace
+     changes don't hide a leak.
+  2. Redaction-token echo - does the response contain a module 4
+     placeholder, either mask mode's `[REDACTED_<TYPE>]` or tokenize mode's
+     `[REDACTED_<TYPE>_<8 hex>]`?
 
 Both checks only ever look at text already present in the request/response
 - never RedactionVault - so this module structurally cannot reintroduce
@@ -16,42 +18,58 @@ raw PII, independent of whatever module 4 does.
 import re
 from typing import Any
 
-REDACTION_TOKEN_RE = re.compile(r"\[REDACTED_[A-Z_]+\]")
+from app.core.messages import content_text_parts, message_text
 
-# A verbatim-substring match against a very short system prompt (e.g. "Be
-# concise.") would false-positive on ordinary responses that happen to
-# contain the same common phrase. Below this length, skip the check rather
-# than report a meaningless match.
+REDACTION_TOKEN_RE = re.compile(r"\[REDACTED_[A-Z_]+?(?:_[0-9a-f]{8})?\]")
+
+# A match against a very short system prompt (e.g. "Be concise.") would
+# false-positive on ordinary responses that happen to contain the same
+# common phrase. Below this length, skip the check rather than report a
+# meaningless match.
 MIN_SYSTEM_PROMPT_LENGTH_FOR_ECHO_CHECK = 20
 
+# A run of this many consecutive system-prompt words appearing verbatim in
+# the response counts as a (partial) leak. 12 words is long enough that it
+# doesn't happen by coincidence - common boilerplate like "You are a helpful
+# assistant" is 5 - but short enough to catch a model that leaks one
+# sentence of its instructions rather than all of them.
+PARTIAL_LEAK_MIN_WORDS = 12
 
-def _normalize(text: str) -> str:
-    return " ".join(text.split())
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"\w+", text.lower())
+
+
+def _ngrams(words: list[str], n: int) -> set[tuple[str, ...]]:
+    return {tuple(words[i : i + n]) for i in range(len(words) - n + 1)}
 
 
 def extract_system_prompt(body: dict[str, Any]) -> str:
-    for message in body.get("messages", []):
-        if message.get("role") == "system" and isinstance(message.get("content"), str):
-            return message["content"]
-    return ""
+    parts = [
+        message_text(m)
+        for m in body.get("messages", [])
+        if isinstance(m, dict) and m.get("role") in ("system", "developer")
+    ]
+    return "\n".join(p for p in parts if p)
 
 
 def extract_response_text(response_body: dict[str, Any]) -> str:
-    parts = []
+    parts: list[str] = []
     for choice in response_body.get("choices", []):
-        content = choice.get("message", {}).get("content")
-        if isinstance(content, str):
-            parts.append(content)
+        parts.extend(content_text_parts(choice.get("message", {}).get("content")))
     return "\n".join(parts)
 
 
 def detect_system_prompt_echo(system_prompt: str, response_text: str) -> bool:
     if not system_prompt or not response_text:
         return False
-    normalized_system = _normalize(system_prompt)
-    if len(normalized_system) < MIN_SYSTEM_PROMPT_LENGTH_FOR_ECHO_CHECK:
+    if len(" ".join(system_prompt.split())) < MIN_SYSTEM_PROMPT_LENGTH_FOR_ECHO_CHECK:
         return False
-    return normalized_system in _normalize(response_text)
+    prompt_words, response_words = _words(system_prompt), _words(response_text)
+    n = min(PARTIAL_LEAK_MIN_WORDS, len(prompt_words))
+    if n == 0 or len(response_words) < n:
+        return False
+    return not _ngrams(prompt_words, n).isdisjoint(_ngrams(response_words, n))
 
 
 def detect_redaction_token_echo(response_text: str) -> list[str]:

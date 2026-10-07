@@ -2,7 +2,8 @@
 
 Reads `ctx.metadata["db"]`, populated by the chat endpoint before the
 pipeline runs (same pattern as budget_check_stage). Detects PII in every
-string message `content` in the outbound prompt via
+message's text content in the outbound prompt - plain-string content and
+every text part of list-form content alike - via
 app.core.redaction.analyzer, then redacts each detected span according to
 the team's RedactionPolicy (or the stage's default - see
 app.core.redaction.policy):
@@ -36,6 +37,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.context import RequestContext, StageResult
+from app.core.messages import is_text_part
 from app.core.redaction.analyzer import analyze_text
 from app.core.redaction.policy import effective_entities, effective_mode, get_redaction_policy
 from app.core.redaction.vault import store_token
@@ -78,6 +80,41 @@ async def _redact_text(
     return text, counts
 
 
+def _merge_counts(into: dict[str, int], counts: dict[str, int]) -> None:
+    for entity_type, count in counts.items():
+        into[entity_type] = into.get(entity_type, 0) + count
+
+
+async def _redact_content(
+    db: AsyncSession,
+    team_id: UUID,
+    content: Any,
+    enabled_entities: list[str],
+    mode: RedactionMode,
+) -> tuple[Any, dict[str, int]]:
+    """Redact a message's `content`, whether a plain string or a list of
+    typed parts. List-form text parts must be redacted too - otherwise the
+    same PII sent as `[{"type": "text", "text": ...}]` reaches the provider
+    untouched. Non-text parts (images etc.) pass through unchanged."""
+    if isinstance(content, str):
+        return await _redact_text(db, team_id, content, enabled_entities, mode)
+    if not isinstance(content, list):
+        return content, {}
+
+    counts: dict[str, int] = {}
+    new_parts = []
+    for part in content:
+        if is_text_part(part):
+            new_text, part_counts = await _redact_text(
+                db, team_id, part["text"], enabled_entities, mode
+            )
+            if part_counts:
+                _merge_counts(counts, part_counts)
+                part = {**part, "text": new_text}
+        new_parts.append(part)
+    return (new_parts if counts else content), counts
+
+
 async def pii_redaction_stage(ctx: RequestContext) -> StageResult:
     db = ctx.metadata["db"]
 
@@ -92,23 +129,20 @@ async def pii_redaction_stage(ctx: RequestContext) -> StageResult:
     failure_type: str | None = None
 
     for message in messages:
-        content = message.get("content")
-        if isinstance(content, str):
-            try:
-                new_content, counts = await _redact_text(
-                    db, ctx.team_id, content, enabled_entities, mode
-                )
-            except Exception as exc:  # noqa: BLE001 - see RedactionError docstring
-                # Deliberately not logging str(exc)/repr(exc) here - see
-                # module docstring for why that can't be trusted to never
-                # contain request text. Type name only.
-                failure_type = type(exc).__name__
-                break
-            if counts:
-                changed = True
-                for entity_type, count in counts.items():
-                    redaction_map[entity_type] = redaction_map.get(entity_type, 0) + count
-                message = {**message, "content": new_content}
+        try:
+            new_content, counts = await _redact_content(
+                db, ctx.team_id, message.get("content"), enabled_entities, mode
+            )
+        except Exception as exc:  # noqa: BLE001 - see RedactionError docstring
+            # Deliberately not logging str(exc)/repr(exc) here - see
+            # module docstring for why that can't be trusted to never
+            # contain request text. Type name only.
+            failure_type = type(exc).__name__
+            break
+        if counts:
+            changed = True
+            _merge_counts(redaction_map, counts)
+            message = {**message, "content": new_content}
         new_messages.append(message)
 
     # Raised outside the `except` block above, not via `raise ... from exc`

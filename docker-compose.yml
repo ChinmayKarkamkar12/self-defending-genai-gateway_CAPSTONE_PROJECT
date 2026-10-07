@@ -17,6 +17,12 @@ services:
       # superseded by these.
       POSTGRES_DSN: postgresql://postgres:postgres@postgres:5432/gateway
       REDIS_URL: redis://redis:6379/0
+      # The threat classifier checkpoint is git-ignored (~700MB) and built
+      # locally by training/train_classifier.py, so it's mounted rather than
+      # baked into the image. The gateway refuses to start without it.
+      THREAT_MODEL_DIR: /models/threat-classifier
+    volumes:
+      - ./training/checkpoints/final:/models/threat-classifier:ro
     depends_on:
       postgres:
         condition: service_healthy
