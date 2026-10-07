@@ -25,12 +25,37 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.auth import hash_key
 from app.core.governance.redis_client import get_redis
+from app.core.threat.classifier import ThreatScore, reset_threat_classifier, set_threat_classifier
 from app.db.base import Base
 from app.db.models import ApiKey, Team
 from app.db.session import get_db
 from app.main import app
 
 RAW_TEST_KEY = "sk-gw-test-key"
+
+
+class FakeThreatClassifier:
+    """Test double for ThreatClassifier - returns a fixed score without
+    loading torch or the real checkpoint. Tests that care about specific
+    scores (gateway/tests/test_threat_stage.py) construct their own
+    instance and call `set_threat_classifier` again mid-test; every other
+    test gets this all-benign default via the autouse fixture below, so
+    no test pays the cost of loading the real model."""
+
+    def __init__(self, fixed_score: ThreatScore | None = None):
+        self._fixed_score = fixed_score or ThreatScore(
+            benign=1.0, prompt_injection=0.0, jailbreak=0.0
+        )
+
+    def score(self, text: str) -> ThreatScore:  # noqa: ARG002 - fixed regardless of input
+        return self._fixed_score
+
+
+@pytest.fixture(autouse=True)
+def fake_threat_classifier():
+    set_threat_classifier(FakeThreatClassifier())
+    yield
+    reset_threat_classifier()
 
 
 @pytest.fixture

@@ -1,0 +1,13 @@
+# Training-only dependencies, layered on top of gateway/requirements.txt
+# (which already pins torch + transformers for runtime inference - see
+# app/core/threat/classifier.py). Install with:
+#   gateway/.venv/Scripts/python.exe -m pip install -r gateway/requirements.txt
+#   gateway/.venv/Scripts/python.exe -m pip install -r training/requirements.txt
+#
+# This file exists separately from gateway/requirements.txt because
+# `datasets`/`accelerate`/`scikit-learn` are only needed to *produce* a
+# checkpoint, never by the running gateway service.
+datasets
+accelerate
+scikit-learn
+tqdm

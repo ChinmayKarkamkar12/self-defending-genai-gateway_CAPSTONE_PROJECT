@@ -50,11 +50,21 @@
     4. **Vault retention gap, documented (not built — matches the module plan's original scope decision).** Confirmed `expires_at` is never set (`vault.py`'s `store_token` always leaves it NULL) and never read/enforced anywhere — no cleanup job exists at all, so tokenized PII is kept forever once written. Added an explicit "KNOWN LIMITATION" docstring block on `RedactionVault` in `app/db/models.py` and a matching comment at the `store_token` call site in `vault.py`, so this reads as a documented decision instead of a silent gap.
     - All four fixes verified together: 62/62 tests passing (up from 57), `ruff check` clean, and a live re-run through the full `docker compose up` stack (real Postgres + Redis) — migration unaffected (models.py changes were docstring-only, no schema change, no new migration needed), gateway starts cleanly, and a live credit-card + email redaction through the actual container correctly redacted both with no double-redaction artifact from the Presidio/regex overlap on the card number.
 
+- [x] Module 5: Threat detection classifier — fine-tuned DeBERTa-v3-base 3-class classifier, score-only `threat_detection_stage`, `output_scan_stage` leakage checks, model loaded once at startup. Built on `main` directly (same pattern as modules 2-4).
+  - `training/prepare_dataset.py` (deepset/prompt-injections + jackhhao/jailbreak-classification + sampled alpaca benigns -> 1,913 examples, stratified 80/10/10, seed 42), `train_classifier.py`, `evaluate.py`, and `training/README.md` with the full numbers for the faculty report. `training/data/`, `training/checkpoints/`, and `training/train_log.txt` are gitignored — reproducible from the scripts.
+  - **Held-out test results (190 examples):** benign F1 0.96 (P 0.93 / R 1.00), prompt_injection F1 0.87 (P 1.00 / R 0.77), jailbreak F1 0.95 (P 0.97 / R 0.94), macro F1 0.93, accuracy 0.95. Zero false positives on benign. Targets, set after the first good run as the plan instructs: injection F1 >= 0.85, jailbreak F1 >= 0.90, macro >= 0.90 — all met. Weak spot: injection recall 0.77 (4/26 missed, smallest class) — documented in the README as a reason module 6's bandit should escalate on moderate injection probabilities rather than an argmax label.
+  - Inference latency (single prompt, warm): ~21 ms on the RTX 3050 laptop GPU, ~161 ms on CPU — documented in `training/README.md` per plan §3.
+  - `app/core/threat/classifier.py` (`ThreatClassifier`/`ThreatScore`, process-wide singleton with `set_/reset_threat_classifier` test hooks, `THREAT_MODEL_DIR` setting to override checkpoint path), `app/core/threat/output_scan.py` (verbatim system-prompt echo check with whitespace normalization and a 20-char minimum; `[REDACTED_*]` token echo check — never touches RedactionVault, so it can't reintroduce raw PII).
+  - `threat_detection_stage` always returns ALLOW and only writes `ctx.metadata["threat_score"]` — the score/action boundary module 6 depends on, enforced by `test_threat_stage.py::test_stage_never_blocks`. `output_scan_stage` writes `ctx.metadata["output_flags"]` and may BLOCK directly on leakage.
+  - `app/main.py` lifespan hook loads the classifier once at startup. Tests never load the real model except `test_classifier.py`'s 3 tests (auto-skip if the checkpoint is missing); everything else uses `FakeThreatClassifier` from an autouse fixture in `conftest.py`.
+  - **Root cause of the earlier failed training runs (important):** transformers 5.x `from_pretrained` defaults to the checkpoint's *stored* dtype, and deberta-v3-base is stored in fp16 — so the model was silently training in pure fp16 with no loss scaling (NaN grad_norm from step 1, all-benign predictions, macro-F1 0.23). It was *not* a bf16/fp16 Trainer-flag issue — an earlier session's comment claimed fp32 had been "confirmed", but that run was also NaN. Fixed by passing `dtype=torch.float32` to `from_pretrained` in the training script, `evaluate.py`, and `classifier.py`.
+  - New deps: `torch` (install the CUDA build — this run used 2.6.0+cu124), `transformers` (5.19.0), `sentencepiece`, `protobuf` in `gateway/requirements.txt`; training-only `datasets`, `accelerate`, `scikit-learn`, `tqdm` in `training/requirements.txt`.
+  - 78/78 tests passing (incl. the 3 real-checkpoint tests), `ruff check` clean on `gateway/` and `training/`.
+
 ## In progress
 (none yet)
 
 ## Not started
-- [ ] Module 5: Threat detection classifier
 - [ ] Module 6a: Adaptive defense — tactical bandit
 - [ ] Module 6b: Adaptive defense — RL session agent
 - [ ] Module 7: Audit logging
@@ -64,6 +74,9 @@
 - [ ] Module 11: Build roadmap (reference only, not implemented)
 
 ## Notes for next session
+- **Next up: Module 6a (tactical bandit).** Its context features come from `ctx.metadata["threat_score"]` (`{benign, prompt_injection, jailbreak}` probabilities) written by module 5. Module 6b must not start until 6a's Definition of Done is met.
+- The trained checkpoint lives only on this machine at `training/checkpoints/final/` (gitignored, ~700 MB). A fresh clone must re-run `training/prepare_dataset.py` + `training/train_classifier.py` (~45 min on the RTX 3050) before the gateway can start, since the lifespan hook loads it at startup. The Docker image doesn't include it yet — mounting it / setting `THREAT_MODEL_DIR` is module 10's job.
+- Training on the 4 GB RTX 3050 nearly fills VRAM, and later epochs slow down ~20x (3 it/s -> ~6 s/it) as memory spills to shared RAM. It still completes; reduce batch size or `MAX_LENGTH` if a future run needs to be faster.
 - Module 1 was committed and pushed directly to `main` (no feature branch/PR), which deviates from the CLAUDE.md convention of "one feature branch per module, PR per module." Starting with Module 2, work should go on a feature branch (e.g. `module-2-gateway-core-proxy`) with a PR, unless told otherwise.
 - Docker smoke test verified manually: built image, ran container, curled `/health` from host, got `{"status":"ok"}`, then tore down with `docker compose down`.
 - `.env` used for local testing was a copy of `.env.example` with placeholder (non-real) API keys — not committed.

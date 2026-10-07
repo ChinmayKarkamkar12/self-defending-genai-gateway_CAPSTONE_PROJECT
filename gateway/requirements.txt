@@ -19,6 +19,16 @@ presidio-analyzer==2.2.33
 presidio-anonymizer
 spacy
 cryptography
+
+# Module 5 (threat detection classifier): runtime inference deps for
+# app/core/threat/classifier.py. torch is installed separately with a
+# CUDA-enabled build (see training/README.md) rather than the plain PyPI
+# wheel, so it's listed here for documentation/pip-check purposes but the
+# actual install command differs from a bare `pip install -r`.
+torch
+transformers
+sentencepiece
+protobuf
 pytest
 pytest-asyncio
 aiosqlite

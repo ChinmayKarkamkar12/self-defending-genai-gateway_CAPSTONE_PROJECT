@@ -28,3 +28,11 @@ Thumbs.db
 dist/
 build/
 *.log
+
+# Training artifacts (module 5) - large binary checkpoints and downloaded
+# datasets don't belong in git. Reproducible via training/prepare_dataset.py
+# + training/train_classifier.py; metrics JSON files are the only outputs
+# that do get committed (copied into training/README.md by hand).
+training/data/
+training/checkpoints/
+training/train_log.txt

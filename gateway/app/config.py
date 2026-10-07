@@ -46,6 +46,13 @@ class Settings(BaseSettings):
 
     LOG_LEVEL: str = "INFO"
 
+    # Override for where app/core/threat/classifier.py loads the trained
+    # checkpoint from. Empty string (the default) means "use the repo-root
+    # training/checkpoints/final/ path" - see classifier.py's
+    # DEFAULT_CHECKPOINT_DIR. Set this in deployments that mount the
+    # checkpoint somewhere else (project_plan/10-deployment-docker-compose.md).
+    THREAT_MODEL_DIR: str = ""
+
 
 def _load_settings(**overrides) -> Settings:
     # pydantic's ValidationError.__str__ (and .errors()' "input" key) embeds
