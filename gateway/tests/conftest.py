@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.auth import hash_key
 from app.core.governance.redis_client import get_redis
+from app.core.stages.threat_detection import system_prompt_cache
 from app.core.threat.classifier import (
     ScanResult,
     ThreatScore,
@@ -64,9 +65,13 @@ class FakeThreatClassifier:
 
 @pytest.fixture(autouse=True)
 def fake_threat_classifier():
+    # The system-prompt score cache already resets when the classifier
+    # changes; clearing here too keeps every test fully independent.
+    system_prompt_cache.clear()
     set_threat_classifier(FakeThreatClassifier())
     yield
     reset_threat_classifier()
+    system_prompt_cache.clear()
 
 
 @pytest.fixture

@@ -6,11 +6,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 COPY requirements.txt .
-# CPU-only torch first, so `torch` in requirements.txt is already satisfied.
+# CPU-only torch first, so `torch==2.8.0` in requirements.txt is already satisfied.
 # The default Linux PyPI wheel bundles CUDA (~2.5GB) that this image can't
 # use without a GPU runtime anyway; CPU inference is ~160ms/request (see
 # training/README.md).
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir -r requirements.txt \
     && python -m spacy download en_core_web_sm
 

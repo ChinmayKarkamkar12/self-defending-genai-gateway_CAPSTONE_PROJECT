@@ -21,12 +21,17 @@ spacy
 cryptography
 
 # Module 5 (threat detection classifier): runtime inference deps for
-# app/core/threat/classifier.py. torch is installed separately with a
-# CUDA-enabled build (see training/README.md) rather than the plain PyPI
-# wheel, so it's listed here for documentation/pip-check purposes but the
-# actual install command differs from a bare `pip install -r`.
-torch
-transformers
+# app/core/threat/classifier.py. Pinned so local, CI and Docker all run the
+# same versions (the checkpoint was trained on torch 2.6 and gives identical
+# scores on 2.8 - see training/README.md). Install torch *before* this file from the right
+# index so pip doesn't pull the ~2.5GB CUDA wheel where it can't be used:
+#   CPU (Docker, CI): pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+#   GPU (training):   pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cu126
+# `==2.8.0` is satisfied by both 2.8.0+cpu and 2.8.0+cu126. Not 2.6: with
+# transformers 5.19, torch 2.6 fails to import on CPU-only hosts
+# (torch.accelerator.current_accelerator() raises instead of returning None).
+torch==2.8.0
+transformers==5.19.0
 sentencepiece
 protobuf
 pytest

@@ -20,7 +20,13 @@ jobs:
           cache-dependency-path: gateway/requirements.txt
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        # CPU torch first so requirements.txt's torch pin is already met and
+        # pip doesn't download the CUDA wheel. The spaCy model isn't a PyPI
+        # package; Presidio (module 4) needs it at test time.
+        run: |
+          pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+          python -m spacy download en_core_web_sm
 
       - name: Ruff lint
         run: ruff check .
