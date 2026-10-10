@@ -391,4 +391,25 @@ analysis of module 6a (LIMITATIONS.md L6a-10 to L6a-25) changed the bandit:
 Effect: the i.i.d. and base-rate results are unchanged (still a tie). Under
 drift, the full-feedback gain is about the same (+0.141 vs +0.137), and the
 realistic gains are larger: +0.042 vs +0.014 at the 2% default, +0.123 vs
-+0.100 at 10%. Discounting lets the scarce labels move the policy sooner.
++0.100 at 10%.
+
+**Where the realistic gain comes from (ablation, 2026-10-10).** Not from
+discounting or the ridge change: all four combinations of prior ridge
+{1.0, 0.01} × discount {1.0, 0.999} on the v2 code give +0.040 to +0.043
+at 2%. Their value is elsewhere (drift recovery in 144 labels instead of
+793, correct bands, no attacker-count effect), not in these numbers.
+The gain comes from feature layout v2:
+
+| Code | 2% spot checks: bandit − static-tuned |
+|---|---|
+| v1, time-of-day / team-rate features random (as in the first run) | +0.014 |
+| v1, the same two features held constant | +0.027 |
+| v2 (features removed, prior spans the full window/PII range) | +0.042 |
+
+About half comes from dropping the noise features: with ~29 labels per
+1,000 requests, three extra weights to fit slow learning down. The rest
+comes from the other v2 changes; most plausibly the prior now covering the
+window counts real prompts have (v1's prior only drew 1-8 windows), though
+that part wasn't isolated further. Offline the two removed features were
+random by construction; in production they would vary too and carry no
+reward signal, so the effect is not an evaluation artefact.
