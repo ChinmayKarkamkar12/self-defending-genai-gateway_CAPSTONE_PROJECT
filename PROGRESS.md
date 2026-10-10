@@ -221,7 +221,27 @@
     - After unlock, the next request reached the provider in a fresh session.
     - With a scratchpad compose override `SESSION_POLICY=dqn` (no code change), the shipped agent ran: it relaxed after a benign request, then tightened on each refusal up to 1.0.
     - Stack restored to the default and stopped with `docker compose down`.
-  - New settings (all optional): `SESSION_IDLE_SECONDS` (1800), `SESSION_POLICY` (rule), `SESSION_POLICY_EVERY_N` (1), `SESSION_POLICY_EVERY_SECONDS` (60), `SESSION_LOCK_SECONDS` (900), `SESSION_DQN_WEIGHTS` (default: the shipped file).
+  - **Second run + automatic mode (2026-10-10, after the user asked to make the RL stronger and selectable automatically):**
+    - **Automatic mode (`SESSION_POLICY=auto`, now the default):**
+      - the gateway runs the DQN only if the verdict file shipped next to the weights (`dqn_policy.json`, written by `evaluate_rl_agent.py --ship`) says GO;
+      - a NO-GO verdict, a missing or unreadable verdict, or weights that fail to load all mean the rule-based fallback;
+      - `rule` / `dqn` / `maintain` can still be forced;
+      - tests: `test_session_policy_auto.py`.
+    - **Fixes for run 1's measured failure modes:**
+      - a wrongful lockout of a benign session now costs -2.0 (was the plan's -0.5);
+      - the lockout guard needs 2 refused requests (was 1);
+      - shaping is always on;
+      - 300k steps;
+      - the best checkpoint is kept on validation sessions, among those within the lockout limit.
+    - **Result: NO-GO again, 3/5 seeds (4 needed).**
+      - Safety is fixed: benign lockout is 0.6-1.3% per seed vs the rule's 0.8% (shifted world: 1.3-3.2% vs 5.9%).
+      - Breaches, mean of 5 seeds on standard: 9.9% vs the rule's 14.4%.
+      - All 5 seeds beat the rule on 3 of 4 presets.
+      - The only misses: seeds 3 and 4 aren't significantly better than doing nothing at a 5% attack-session rate (where even the rule scores below doing nothing).
+    - **Not iterated further:** a third look at the same test sessions would turn them into a tuning set. This is disclosed in training/README.md ("Second run"), and the run-1 agents are archived in `training/checkpoints/rl_run1_2026-10-10/`.
+    - **Shipped:** run-2 seed 0 (chosen on validation), with a NO-GO verdict. So `auto` runs the rule, and `SESSION_POLICY=dqn` runs this agent.
+    - Tests: **277 pass** locally (267 -> 277), ruff clean.
+  - New settings (all optional): `SESSION_IDLE_SECONDS` (1800), `SESSION_POLICY` (auto), `SESSION_POLICY_EVERY_N` (1), `SESSION_POLICY_EVERY_SECONDS` (60), `SESSION_LOCK_SECONDS` (900), `SESSION_DQN_WEIGHTS` (default: the shipped file).
   - New training-only deps in `training/requirements.txt`: `stable-baselines3==2.9.0`, `gymnasium`.
   - Tests: `conftest.py` now defaults `SESSION_POLICY` to `maintain`, so 6a's tests measure 6a alone. One 6a round-trip test otherwise saw the rule tighten its session. 6b's tests opt in.
   - Limitations L6b-1 to L6b-10 added to `LIMITATIONS.md`; L6a-9 resolved; L6a-26 is now Planned under module 10 (see L6b-7).
@@ -238,7 +258,7 @@
 
 ## Notes for next session
 - **`LIMITATIONS.md` is the living register of known limitations.** Add entries when a module ships with one; when something in an entry's "Unblocked by" column becomes available, revisit it; mark fixed ones `Resolved` (don't delete them).
-- **Next up: Module 7 (audit logging).** 6b is done: NO-GO on the DQN, so the rule-based fallback is the default and the DQN is opt-in via `SESSION_POLICY=dqn`. For module 7: `session_policy_events` holds every session-agent run (policy, proposed/actual action, bias before/after, numeric features), and `threat_events.session_id` / `forced_escalation` link 6a decisions to sessions. 6b is committed locally but not pushed yet: ask before pushing, then record the push and the CI result in a separate PROGRESS commit.
+- **Next up: Module 7 (audit logging).** 6b is done: the DQN is NO-GO twice (run 2: 3/5 seeds). `SESSION_POLICY=auto` (the default) therefore runs the rule-based fallback, and it would switch to the DQN by itself if a future evaluation ships a GO verdict. The DQN can be forced with `SESSION_POLICY=dqn`. For module 7: `session_policy_events` holds every session-agent run (policy, proposed/actual action, bias before/after, numeric features), and `threat_events.session_id` / `forced_escalation` link 6a decisions to sessions. 6b is committed locally but not pushed yet: ask before pushing, then record the push and the CI result in a separate PROGRESS commit.
 - Docker stack: run `docker compose up -d --build` (never plain `up -d` after changing code or requirements - if the build fails, plain `up` silently runs the old image), then `docker compose exec gateway alembic upgrade head` and `docker compose exec gateway python -m scripts.seed` (must be `-m`; `python scripts/seed.py` fails with `No module named 'app'`). The gateway won't start unless `training/checkpoints/final/` exists on the host.
 - The trained checkpoint lives only on this machine at `training/checkpoints/final/` (gitignored, ~700 MB). A fresh clone must re-run `training/prepare_dataset.py` + `training/train_classifier.py` (~40-45 min on the RTX 3050) before the gateway can start, since the lifespan hook loads it at startup. The Docker image doesn't include it yet — mounting it / setting `THREAT_MODEL_DIR` is module 10's job.
 - Training on the 4 GB RTX 3050 nearly fills VRAM, and later epochs slow down ~20x (3 it/s -> ~6 s/it) as memory spills to shared RAM. It still completes; reduce batch size or `MAX_LENGTH` if a future run needs to be faster.

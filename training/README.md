@@ -555,10 +555,89 @@ against a rule-based fallback, and here is what we found.
    sessions and under-prices wrongful lockouts. A reward built from measured effects should come
    before more RL tuning.
 
-**Shipped as an opt-in:** `gateway/app/core/defense/rl/dqn_policy.npz` is shaping seed 0.
+**Shipped as an opt-in (superseded by the second run below):** `gateway/app/core/defense/rl/dqn_policy.npz` was shaping seed 0.
 - It was chosen on *validation* sessions (val prompts, unseen seeds), from the two seeds that met
   the criterion on every preset.
 - On validation, vs. the rule: return 2.13 vs 1.93, breaches 7.4% vs 10.7%, benign lockout 0.1% vs
   0.8%.
 - Set `SESSION_POLICY=dqn` to run it; it was verified live in Docker.
 - It is not the default, because the variant as a whole failed the criterion.
+
+## Second run (2026-10-10): fixing what the first run found
+
+The first run's NO-GO had two measured causes. Each got a targeted fix:
+
+| Cause (first run) | Fix |
+|---|---|
+| 3/5 shaped agents locked out 2-5x more benign sessions than the rule; the reward priced a wrongful lockout at -0.5 | A benign session locked out now ends at **-2.0** (`WRONGFUL_LOCKOUT_REWARD`), as bad as a breach; the lockout guard needs **2** refused requests instead of 1 (applies to every policy; the rule is unaffected) |
+| 2/5 unshaped agents collapsed | Shaping always on (the ablation showed it stabilises training); 300k steps; **best checkpoint kept on validation**: every 25k steps the agent plays 600 validation sessions (val prompts, unseen seeds) and the exported checkpoint is the best by return among those within the lockout limit |
+
+**Kept unchanged:**
+- the go/no-go criterion;
+- the presets;
+- the test sessions.
+
+**Disclosure:** this is the second evaluation on the same test sessions. The changes were chosen from the first run's measured failure modes, and checkpoints were selected on validation only. The run-1 agents and their evaluation are archived in `training/checkpoints/rl_run1_2026-10-10/`. Rewards in this section are under the revised reward, so returns aren't directly comparable with the first run's table. The safety metric (benign lockout rate) is directly comparable.
+
+### Results (held-out test prompts, 3,000 sessions per preset, mean of 5 seeds)
+
+| preset | policy | return | breach | attack flagged | benign friction | benign flagged | benign lockout |
+|---|---|---|---|---|---|---|---|
+| standard | maintain | 1.678 | 0.193 | 0.000 | 0.071 | 0.000 | 0.000 |
+| | rule | 1.943 | 0.144 | 0.574 | 0.074 | 0.079 | 0.008 |
+| | DQN | **2.077** | **0.099** | 0.657 | 0.076 | 0.052 | 0.009 |
+| attack_heavy | maintain | 0.496 | 0.175 | 0.000 | 0.069 | 0.000 | 0.000 |
+| | rule | 1.353 | 0.135 | 0.566 | 0.072 | 0.077 | 0.009 |
+| | DQN | **1.657** | **0.083** | 0.664 | 0.073 | 0.049 | 0.008 |
+| low_attack_rate | maintain | 2.239 | 0.184 | 0.000 | 0.070 | 0.000 | 0.000 |
+| | rule | 2.217 | 0.141 | 0.577 | 0.073 | 0.078 | 0.008 |
+| | DQN | **2.291** | **0.094** | 0.681 | 0.076 | 0.053 | 0.009 |
+| shifted | maintain | 2.381 | 0.646 | 0.000 | 0.130 | 0.000 | 0.000 |
+| | rule | 2.253 | 0.442 | 0.623 | 0.152 | 0.231 | 0.059 |
+| | DQN | **2.649** | **0.356** | 0.486 | 0.141 | 0.082 | 0.023 |
+
+Benign lockout per seed (rule in brackets):
+
+| preset | rule | seed 0 | seed 1 | seed 2 | seed 3 | seed 4 |
+|---|---|---|---|---|---|---|
+| standard | 0.008 | 0.006 | 0.007 | 0.009 | 0.010 | 0.012 |
+| attack_heavy | 0.009 | 0.006 | 0.007 | 0.008 | 0.009 | 0.011 |
+| low_attack_rate | 0.008 | 0.007 | 0.007 | 0.009 | 0.011 | 0.013 |
+| shifted | 0.059 | 0.013 | 0.022 | 0.020 | 0.027 | 0.032 |
+
+Every seed of every preset is now within the safety limit (rule + 1 point).
+
+**Return vs. the baselines:**
+- All 5 seeds beat the **rule** with the 95% CI above 0 on standard, attack_heavy and shifted.
+- All 5 beat **maintain** with the CI above 0 on standard, attack_heavy and shifted.
+- **The only misses are on `low_attack_rate` (5% attack sessions):**
+  - seed 3 vs maintain: +0.029, CI [-0.004, +0.061];
+  - seed 4 vs maintain: -0.006, CI [-0.040, +0.027];
+  - seed 4 vs rule: +0.015, CI [-0.010, +0.040].
+
+  When attacks are that rare there is little for any policy to win. Even the rule scores below doing nothing there (2.217 vs 2.239).
+
+### Go/no-go: NO-GO again (3/5 seeds; 4 needed)
+
+By the criterion as written, the training method still isn't reliable enough, so `SESSION_POLICY=auto` keeps running the rule-based fallback. What changed is *why* it fails:
+
+| | Run 1 | Run 2 |
+|---|---|---|
+| Seeds passing | 2/5 (shaping), 0/5 (no shaping) | 3/5 |
+| Cause of failures | wrongful lockouts 2-5x the rule; 2 collapsed runs | 2 seeds not clearly better than doing nothing at a 5% attack rate |
+| Benign lockout, 5-seed mean (standard) | 1.8% (rule 0.8%) | 0.9% (rule 0.8%) |
+| Breach rate, 5-seed mean (standard) | 10.2% (rule 14.4%) | 9.9% (rule 14.4%) |
+
+- **The safety problem is fixed.**
+- **What remains is a power problem:** small gains at a 5% attack rate, which 3,000 sessions can't separate from zero for every seed.
+
+We stop here rather than iterate further against the same test sessions. A third look would turn the test set into a tuning set.
+
+**Shipped:** `dqn_policy.npz` is run-2 seed 0, chosen on validation sessions among the 3 seeds that met the criterion (validation return 2.158). It is shipped with `dqn_policy.json` = NO-GO, so:
+- `auto` runs the rule;
+- `SESSION_POLICY=dqn` runs this agent.
+
+On the test presets this agent:
+- beats both baselines everywhere;
+- has fewer breaches than the rule (standard 0.099 mean across seeds);
+- locks out fewer benign sessions than the rule.
