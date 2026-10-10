@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import settings
 from app.core.auth import hash_key
+from app.core.defense.rl.policy import reset_session_policy_cache
 from app.core.defense.store import bandit_store
 from app.core.governance.redis_client import get_redis
 from app.core.stages import bandit_policy
@@ -101,6 +102,19 @@ def isolated_bandit(monkeypatch):
     bandit_policy.spot_check_rng.seed(0)
     yield
     bandit_store.reset()
+
+
+@pytest.fixture(autouse=True)
+def isolated_session_policy(monkeypatch):
+    """Module 6b's session agent is set to "maintain" (track and log, never
+    change the bias) so module 6a's tests measure 6a alone: under the
+    default rule policy, a test sending several suspicious requests from
+    one key would see the session tighten. 6b's own tests set
+    SESSION_POLICY explicitly."""
+    monkeypatch.setattr(settings, "SESSION_POLICY", "maintain")
+    reset_session_policy_cache()
+    yield
+    reset_session_policy_cache()
 
 
 @pytest.fixture

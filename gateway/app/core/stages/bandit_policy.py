@@ -20,7 +20,10 @@ Steps:
   3. Ask the bandit for an action, exploration included, with arms masked
      by bandit.safety_mask (allow above BANDIT_ALLOW_MASK_THRESHOLD or on a
      flagged system prompt plus a suspicious conversation, redact above
-     BANDIT_REDACT_MASK_THRESHOLD).
+     BANDIT_REDACT_MASK_THRESHOLD). If module 6b's session agent left a
+     `challenge` for this session, it is consumed and the request is
+     escalated to human review instead, whatever the bandit chose
+     (ThreatEvent.forced_escalation; arm_scores still show its choice).
   4. If the team already has BANDIT_REVIEW_TEAM_CAP items pending review,
      an escalation is carried out as a block (outcome=block) and no spot
      check is sampled - see review_queue.py.
@@ -49,7 +52,7 @@ from redis.asyncio import Redis
 from app.config import settings
 from app.core.context import RequestContext, StageResult
 from app.core.defense.bandit import safety_mask
-from app.core.defense.escalation import read_escalation_bias
+from app.core.defense.escalation import read_escalation_bias, take_challenge
 from app.core.defense.features import (
     FEATURE_VERSION,
     FeatureInputs,
@@ -119,7 +122,8 @@ async def bandit_policy_stage(ctx: RequestContext) -> StageResult:
         pii_entity_count=sum((ctx.metadata.get("redaction_map") or {}).values()),
     )
     x = build_features(inputs)
-    bias = await read_escalation_bias(redis, ctx.metadata.get("session_id"))
+    session_id = ctx.metadata.get("session_id")
+    bias = await read_escalation_bias(redis, session_id)
 
     masked = safety_mask(
         attack_probability(threat_score),
@@ -133,6 +137,9 @@ async def bandit_policy_stage(ctx: RequestContext) -> StageResult:
         x, alpha=settings.BANDIT_ALPHA, escalation_bias=bias, masked=masked
     )
     action = selection.action
+    forced_escalation = await take_challenge(redis, session_id)
+    if forced_escalation:
+        action = DefenseAction.ESCALATE_TO_HUMAN
 
     review_reason: ReviewReason | None = None
     if action == DefenseAction.ESCALATE_TO_HUMAN:
@@ -185,6 +192,8 @@ async def bandit_policy_stage(ctx: RequestContext) -> StageResult:
         outcome=outcome,
         bandit_confidence=selection.confidence,
         escalation_bias=bias,
+        session_id=session_id,
+        forced_escalation=forced_escalation,
         created_at=now,
     )
     db.add(event)
@@ -198,6 +207,7 @@ async def bandit_policy_stage(ctx: RequestContext) -> StageResult:
         "threat_event_id": event.id,
         "confidence": selection.confidence,
         "escalation_bias": bias,
+        "forced_escalation": forced_escalation,
         "masked": sorted(a.value for a in masked),
         "removed_spans": removed_spans,
         "residual_blocked": residual_blocked,

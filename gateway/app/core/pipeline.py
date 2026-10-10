@@ -1,8 +1,16 @@
 """Fixed-order pipeline stage runner. See project_plan/02-gateway-core-proxy.md §4, §6.
 
 Stage order (pre-call -> provider call -> post-call -> audit):
-    [budget_check, threat_detection, pii_redaction, bandit_policy] -> provider_call
+    [session_guard, budget_check, threat_detection, pii_redaction, bandit_policy]
+    -> session_policy -> provider_call
     -> usage_recording -> [output_scan] -> defense_feedback -> [audit_log]
+
+session_guard (module 6b) goes first: a locked API key is refused before
+anything is spent on it, and the session ID it sets is what bandit_policy
+reads the session's escalation_bias and challenge flag with.
+session_policy (module 6b) runs once the pre-call stages are done, whether
+they allowed or blocked the request - a refused request is exactly what the
+session agent needs to see. It never blocks; it shapes the next request.
 
 bandit_policy (module 6a) is the only pre-call stage that turns the threat
 score into an action - see app/core/stages/bandit_policy.py for why it
@@ -33,6 +41,8 @@ from app.core.stages.bandit_policy import bandit_policy_stage
 from app.core.stages.budget_check import budget_check_stage
 from app.core.stages.output_scan import output_scan_stage
 from app.core.stages.pii_redaction import pii_redaction_stage
+from app.core.stages.session_guard import session_guard_stage
+from app.core.stages.session_policy import session_policy_stage
 from app.core.stages.threat_detection import threat_detection_stage
 
 logger = logging.getLogger("gateway.pipeline")
@@ -45,6 +55,7 @@ class PipelineStage(Protocol):
 
 
 PRE_CALL_STAGES: list[PipelineStage] = [
+    session_guard_stage,
     budget_check_stage,
     threat_detection_stage,
     pii_redaction_stage,
@@ -96,6 +107,12 @@ async def run_usage_recording(ctx: RequestContext) -> None:
     cost accounting. See module docstring for why this isn't a POST_CALL_STAGE.
     """
     await _run_stage(usage_recording_stage, ctx)
+
+
+async def run_session_policy(ctx: RequestContext) -> None:
+    """Module 6b's session policy step, after the pre-call stages. Never
+    blocks on its own; errors follow FAIL_MODE like every other stage."""
+    await _run_stage(session_policy_stage, ctx)
 
 
 async def run_defense_feedback(ctx: RequestContext) -> None:

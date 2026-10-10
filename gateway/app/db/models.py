@@ -81,6 +81,18 @@ class RewardSource(StrEnum):
     OUTPUT_SCAN = "output_scan"
 
 
+class SessionAction(StrEnum):
+    """The session agent's action space. See
+    project_plan/06b-adaptive-defense-rl-session-agent.md §2 and
+    app/core/defense/rl/actions.py for what each one does."""
+
+    MAINTAIN = "maintain"
+    TIGHTEN = "tighten"
+    RELAX = "relax"
+    CHALLENGE = "challenge"
+    LOCKOUT = "lockout"
+
+
 # JSONB on Postgres (as the module plan specifies), plain JSON elsewhere so
 # the SQLite-backed test suite can create the same tables.
 _JSONB = JSON().with_variant(JSONB(), "postgresql")
@@ -231,6 +243,46 @@ class ThreatEvent(Base):
     reward_step: Mapped[int | None] = mapped_column(Integer, nullable=True)
     rewarded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     human_label: Mapped[ThreatLabel | None] = mapped_column(String(10), nullable=True)
+    # Module 6b's session (app/core/defense/session.py); NULL for events
+    # recorded before 6b existed.
+    session_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # The session agent's `challenge` forced this request to human review,
+    # whatever the bandit chose (`arm_scores` still shows what it would
+    # have picked). The verdict is still learned from: it is a real label
+    # for the escalate arm in this context.
+    forced_escalation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )
+
+
+class SessionPolicyEvent(Base):
+    """One run of the session agent (module 6b): what it saw and what it
+    did. See project_plan/06b-adaptive-defense-rl-session-agent.md §5.
+
+    Redis holds the live session state and expires it; this table is the
+    history the risk-trend endpoint (module 8) and the audit log (module 7)
+    read. Like ThreatEvent it holds only numbers - the feature vector is
+    built from counts and classifier scores, never from prompt text.
+    """
+
+    __tablename__ = "session_policy_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    session_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    team_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("teams.id"), nullable=False)
+    api_key_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("api_keys.id"), nullable=False)
+    # Which policy decided: "rule", "dqn" or "maintain" (SESSION_POLICY).
+    policy: Mapped[str] = mapped_column(String(20), nullable=False)
+    # What the policy chose, and what was carried out once the guards ran
+    # (rl/actions.py: e.g. lockout without any refused request -> maintain).
+    proposed_action: Mapped[SessionAction] = mapped_column(String(20), nullable=False)
+    action: Mapped[SessionAction] = mapped_column(String(20), nullable=False)
+    bias_before: Mapped[float] = mapped_column(Float, nullable=False)
+    bias_after: Mapped[float] = mapped_column(Float, nullable=False)
+    features: Mapped[dict[str, Any]] = mapped_column(_JSONB, nullable=False)
+    feature_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    request_count: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
     )

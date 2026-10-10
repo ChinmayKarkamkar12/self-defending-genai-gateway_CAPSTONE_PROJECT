@@ -22,6 +22,7 @@ from app.core.pipeline import (
     StageFailure,
     run_audit_log,
     run_defense_feedback,
+    run_session_policy,
     run_stages,
     run_usage_recording,
 )
@@ -80,6 +81,8 @@ async def chat_completions(
 
     try:
         pre_result = await run_stages(PRE_CALL_STAGES, ctx)
+        # Allowed or blocked, the session agent sees what 6a did.
+        await run_session_policy(ctx)
     except StageFailure:
         await _release_budget_reservation(ctx)
         raise HTTPException(status_code=503, detail=PIPELINE_UNAVAILABLE_DETAIL) from None
