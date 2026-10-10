@@ -6,12 +6,21 @@ process caches the parameters in memory and checks the row's `version` on
 every request (one indexed primary-key read), reloading only when another
 process - or a review decision in this one - has changed it.
 
-Updates take a row lock (`SELECT ... FOR UPDATE`), apply the update to the
+Updates take a row lock (`SELECT ... FOR UPDATE`), apply the change to the
 freshly loaded parameters and bump `version`, so concurrent review
 decisions in different workers serialise instead of overwriting each
-other. The caller commits; if it rolls back instead, the version this
-process cached no longer matches the database and the next request reloads.
+other. The caller commits. The cache is not refreshed by a write: if the
+caller rolled back and another worker then committed the same version
+number, a cache filled here would serve parameters that were never
+persisted. The next `current()` reloads from the database instead.
+
+A stored row this code can't read (an older feature layout or state
+format) is replaced by the warm-start prior with a warning, rather than
+failing every request closed. Migration 0005 clears the row for the v2
+layout; this is the guard for a deploy that skipped it.
 """
+import logging
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -21,8 +30,10 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.core.defense.bandit import LinUCB, new_bandit
+from app.core.defense.bandit import AppliedUpdate, LinUCB, new_bandit
 from app.db.models import BanditState, DefenseAction
+
+logger = logging.getLogger("gateway.defense")
 
 POLICY_NAME = "default"
 
@@ -40,7 +51,18 @@ class BanditStore:
         return self._prior_state
 
     def _load(self, state: dict[str, Any]) -> LinUCB:
-        return LinUCB.from_state(state, alpha=settings.BANDIT_ALPHA)
+        try:
+            return LinUCB.from_state(
+                state, alpha=settings.BANDIT_ALPHA, gamma=settings.BANDIT_DISCOUNT
+            )
+        except (ValueError, KeyError, TypeError) as exc:
+            logger.warning(
+                "stored bandit state is unreadable (%s); using the warm-start prior",
+                type(exc).__name__,
+            )
+            return LinUCB.from_state(
+                self._prior(), alpha=settings.BANDIT_ALPHA, gamma=settings.BANDIT_DISCOUNT
+            )
 
     async def current(self, db: AsyncSession) -> LinUCB:
         """The bandit as of the latest persisted version. Before any
@@ -51,6 +73,7 @@ class BanditStore:
         version = result.scalar_one_or_none()
         if self._cached is not None and self._cached_version == (version or 0):
             self._cached.alpha = settings.BANDIT_ALPHA
+            self._cached.gamma = settings.BANDIT_DISCOUNT
             return self._cached
 
         if version is None:
@@ -71,11 +94,10 @@ class BanditStore:
         )
         await db.execute(stmt)
 
-    async def update(
-        self, db: AsyncSession, x: np.ndarray, action: DefenseAction, reward: float
-    ) -> int:
-        """Apply one reward under a row lock and return the new version.
-        Flushes but does not commit - the caller owns the transaction."""
+    async def _mutate(self, db: AsyncSession, change: Callable[[LinUCB], Any]) -> Any:
+        """Apply `change` to the locked, freshly loaded parameters and bump
+        the version. Flushes but does not commit - the caller owns the
+        transaction."""
         await self._ensure_row(db)
         result = await db.execute(
             select(BanditState)
@@ -85,12 +107,35 @@ class BanditStore:
         )
         row = result.scalar_one()
         bandit = self._load(row.params)
-        bandit.update(x, action, reward)
+        outcome = change(bandit)
         row.params = bandit.to_state()
         row.version = row.version + 1
         await db.flush()
-        self._cached, self._cached_version = bandit, row.version
-        return row.version
+        self._cached = None
+        self._cached_version = None
+        return outcome
+
+    async def update(
+        self,
+        db: AsyncSession,
+        x: np.ndarray,
+        action: DefenseAction,
+        reward: float,
+        weight: float = 1.0,
+    ) -> AppliedUpdate:
+        """Apply one reward under a row lock; returns where it landed."""
+        return await self._mutate(db, lambda bandit: bandit.update(x, action, reward, weight))
+
+    async def revert(
+        self,
+        db: AsyncSession,
+        x: np.ndarray,
+        action: DefenseAction,
+        reward: float,
+        applied: AppliedUpdate,
+    ) -> None:
+        """Withdraw an earlier reward under a row lock."""
+        await self._mutate(db, lambda bandit: bandit.revert(x, action, reward, applied))
 
     def reset(self) -> None:
         """Test hook: forget the cached parameters."""

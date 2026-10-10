@@ -14,9 +14,24 @@ bandit chose to redact a request scoring below it. Capping at the highest
 window guarantees the action removes at least the window that drove the
 decision.
 
+Below BANDIT_REDACT_MIN_WINDOW nothing is cut. The cap above turned every
+redact decision into a cut, and when a few attack labels on low-scoring
+requests had pushed the bandit into redacting near-benign traffic (L6a-10 in
+LIMITATIONS.md), the top window of a p~0 message - often the whole message
+- was removed. A window the classifier scores below the minimum isn't
+evidence of anything to cut, so the request goes through unchanged and the
+event records removed_spans=0 - unless some text is past the scan cap,
+which is still cut (below).
+
 Text past the classifier's MAX_WINDOWS cap was never scored, so it is cut
 too: an action meaning "pass only what we checked" can't pass unchecked
 text.
+
+Cutting whole windows doesn't guarantee the rest is clean: an attack can
+straddle a window boundary, and what remains is re-tokenised into new
+windows. Every text that was cut is scanned again and the highest window
+score is returned as `residual_score`; the stage blocks the request if it
+is still at or above BANDIT_REDACT_WINDOW_THRESHOLD.
 
 The scan runs after module 4's PII redaction, on the text that would go
 upstream. For short prompts (a single window), redacting means removing
@@ -37,6 +52,8 @@ class StripResult:
     body: dict[str, Any]
     removed_spans: int
     threshold: float
+    # Highest window score of the stripped text (0.0 when nothing was cut).
+    residual_score: float
 
 
 def merge_spans(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -77,16 +94,21 @@ def _spans_to_cut(scan: WindowScan, threshold: float) -> list[tuple[int, int]]:
 
 
 def strip_flagged_content(
-    body: dict[str, Any], classifier: Any, max_threshold: float
+    body: dict[str, Any], classifier: Any, max_threshold: float, min_window: float = 0.0
 ) -> StripResult:
     """Blocking (runs the classifier) - call it via asyncio.to_thread."""
     scans = {text: classifier.scan_windows(text) for text in _conversation_texts(body)}
     top = max(
         (w.attack_probability for scan in scans.values() for w in scan.windows), default=1.0
     )
-    threshold = min(max_threshold, top)
+    unscanned = any(scan.unscanned_from is not None for scan in scans.values())
+    if top < min_window and not unscanned:
+        return StripResult(body=body, removed_spans=0, threshold=min_window, residual_score=0.0)
+    # Below the minimum only the unscanned tail is cut (threshold > 1).
+    threshold = min(max_threshold, top) if top >= min_window else 2.0
 
     removed = 0
+    stripped: list[str] = []
 
     def strip(text: str) -> str:
         nonlocal removed
@@ -96,7 +118,11 @@ def strip_flagged_content(
             [(s, min(e, len(text))) for s, e in _spans_to_cut(scans[text], threshold)]
         )
         removed += len(spans)
-        return strip_spans(text, spans)
+        if not spans:
+            return text
+        result = strip_spans(text, spans)
+        stripped.append(result)
+        return result
 
     new_messages = []
     for message in body.get("messages", []):
@@ -112,6 +138,17 @@ def strip_flagged_content(
                 message = {**message, "content": parts}
         new_messages.append(message)
 
+    residual = max(
+        (
+            w.attack_probability
+            for text in set(stripped)
+            for w in classifier.scan_windows(text).windows
+        ),
+        default=0.0,
+    )
     return StripResult(
-        body={**body, "messages": new_messages}, removed_spans=removed, threshold=threshold
+        body={**body, "messages": new_messages},
+        removed_spans=removed,
+        threshold=threshold,
+        residual_score=residual,
     )

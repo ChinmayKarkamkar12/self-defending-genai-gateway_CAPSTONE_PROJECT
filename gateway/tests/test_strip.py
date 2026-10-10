@@ -81,3 +81,46 @@ def test_unscanned_tail_is_cut():
     body = {"messages": [{"role": "user", "content": "EVILxxxxxx" + "z" * 50}]}
     result = strip_flagged_content(body, WindowedFake(unscanned_after=20), max_threshold=0.5)
     assert result.body["messages"][0]["content"] == f"{REMOVED_MARKER}zzzzzzzzzz{REMOVED_MARKER}"
+
+
+def test_nothing_cut_below_min_window():
+    # L6a-10: a near-benign request the bandit chose to redact goes through
+    # unchanged instead of losing its top window (here, the whole message).
+    body = {"messages": [{"role": "user", "content": "aaaaaaaaaaEVILbbbbbb"}]}
+    result = strip_flagged_content(body, WindowedFake(hit=0.2), max_threshold=0.5, min_window=0.3)
+    assert result.removed_spans == 0
+    assert result.body == body
+    assert result.residual_score == 0.0
+
+
+def test_unscanned_tail_still_cut_below_min_window():
+    body = {"messages": [{"role": "user", "content": "aaaaaaaaaa" + "z" * 50}]}
+    result = strip_flagged_content(
+        body, WindowedFake(unscanned_after=20), max_threshold=0.5, min_window=0.3
+    )
+    assert result.body["messages"][0]["content"] == "aaaaaaaaaa" + "z" * 10 + REMOVED_MARKER
+
+
+def test_residual_score_rescans_the_stripped_text():
+    # The fake's windows are character-aligned, so cutting a window removes
+    # EVIL completely - the remainder scores clean...
+    body = {"messages": [{"role": "user", "content": "aaaaaaaaaaEVILbbbbbbcccccccccc"}]}
+    clean = strip_flagged_content(body, WindowedFake(), max_threshold=0.5)
+    assert clean.residual_score == 0.01
+
+    # ...but what's left can still score high (an attack straddling a
+    # window boundary is re-tokenised into new windows). The residual is
+    # the re-scan of the stripped text, not of the original.
+    class LeftoverAfterCut(WindowedFake):
+        def scan_windows(self, text):
+            scan = super().scan_windows(text)
+            if REMOVED_MARKER not in text:
+                return scan
+            return WindowScan(
+                windows=[WindowSpan(w.start, w.end, 0.9) for w in scan.windows],
+                unscanned_from=None,
+            )
+
+    leftover = strip_flagged_content(body, LeftoverAfterCut(), max_threshold=0.5)
+    assert leftover.removed_spans == 1
+    assert leftover.residual_score == 0.9

@@ -39,6 +39,13 @@ A first draft (redact -0.5 on attacks, escalate -0.2 / +0.4) left redact
 and escalate never optimal at any p - two dead arms - which is why the
 values were adjusted. `expected_reward` and `test_reward.py` check these
 crossover points.
+
+The bandit's warm-start policy (bandit.apply_calibrated_prior) is a ridge
+fit to these expected rewards, so its bands are close to, not exactly,
+the ones above. Measured (alpha=0, no feedback): allow < 0.34 < redact <
+0.58 < escalate < 0.81 < block; test_bandit.py pins them to within 0.05.
+Before the prior's ridge was lowered they had drifted to 0.23 / 0.56 /
+0.88 - see bandit.PRIOR_RIDGE.
 """
 from app.db.models import DefenseAction, ThreatLabel
 

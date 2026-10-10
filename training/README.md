@@ -213,9 +213,11 @@ gateway/.venv/Scripts/python.exe training/evaluate_bandit.py --external   # + th
 The first run scores the val/test splits with the production classifier and
 caches the scores in `training/data/bandit_scores_*.jsonl`. Full results go to
 `training/checkpoints/bandit_eval.json` (git-ignored, like the other metrics).
-Every number below is from that file, produced on 2026-10-07 with the
-gateway's default settings (`BANDIT_ALPHA=0.5`, allow masked at ≥ 0.99,
-2% spot checks).
+Every number below is from that file, re-run on 2026-10-10 after the 6a
+hardening pass (feature layout v2, prior ridge 0.01, discount 0.999,
+`redact_and_allow` masked at ≥ 0.999 - see "Changes since the first run"
+at the end), with the gateway's default settings (`BANDIT_ALPHA=0.5`,
+allow masked at ≥ 0.99, 2% spot checks).
 
 **Reward** per request uses the documented table in
 `gateway/app/core/defense/reward.py`: allow +1 / −1, redact +0.5 / 0,
@@ -242,16 +244,16 @@ memorise individual prompts), 30 shuffled orders per fold.
 |---|---|---|---|---|---|---|
 | static@0.5 | 0.722 ± 0.002 | 4.2% | 0.0% | 0.5% | 0.0% | 0 |
 | static-tuned | 0.719 ± 0.006 | 4.2% | 0.0% | 1.0% | 0.0% | 0 |
-| prior-frozen | 0.720 ± 0.004 | 4.2% | 0.2% | 0.5% | 0.5% | 4 |
-| bandit (full) | 0.714 ± 0.004 | 4.2% | 0.6% | 0.5% | 0.5% | 128 |
-| bandit (realistic) | 0.720 ± 0.004 | 4.2% | 0.3% | 0.5% | 0.5% | 7 |
+| prior-frozen | 0.722 ± 0.002 | 4.2% | 0.0% | 0.5% | 0.0% | 5 |
+| bandit (full) | 0.714 ± 0.005 | 4.2% | 0.5% | 0.5% | 0.5% | 124 |
+| bandit (realistic) | 0.721 ± 0.003 | 4.2% | 0.0% | 0.5% | 0.3% | 10 |
 
 Tuned thresholds: 0.09 on val, 0.34 on test.
 
 **Result: a tie.** Every policy is within 0.01 of the others. Paired by
-run, bandit (realistic) minus static-tuned is +0.001 ± 0.002, better in 30
+run, bandit (realistic) minus static-tuned is +0.002 ± 0.002, better in 30
 of 60 runs, so no difference. Bandit (full) is slightly *worse* (−0.005,
-better in 0 of 60 runs). That is the cost of exploration: it escalates 128
+better in 0 of 60 runs). That is the cost of exploration: it escalates 124
 per 1,000 requests while trying arms, and there is nothing here for
 exploration to find.
 
@@ -286,8 +288,8 @@ anyway.)
 
 | Attack rate | static-tuned | static-hindsight | prior-frozen | bandit (full) | bandit (realistic) |
 |---|---|---|---|---|---|
-| 10% | 0.933 ± 0.012 | 0.938 ± 0.007 | 0.936 ± 0.009 | 0.935 ± 0.009 | 0.936 ± 0.009 |
-| 2% | 0.977 ± 0.013 | 0.982 ± 0.008 | 0.980 ± 0.010 | 0.980 ± 0.009 | 0.980 ± 0.010 |
+| 10% | 0.933 ± 0.012 | 0.938 ± 0.007 | 0.938 ± 0.007 | 0.935 ± 0.009 | 0.936 ± 0.009 |
+| 2% | 0.977 ± 0.013 | 0.982 ± 0.008 | 0.982 ± 0.008 | 0.981 ± 0.009 | 0.980 ± 0.010 |
 
 Again a tie: the paired difference against static-tuned is +0.002 to
 +0.003, with the bandit better in 10 of 20 runs at both rates.
@@ -309,35 +311,37 @@ too (11 of 190 held-out attacks and 20 of 112 Gandalf attacks score
 |---|---|---|---|---|---|---|
 | static-tuned | 0.697 ± 0.023 | 4.7% | 0.0% | 21.0% | 0.0% | 0 |
 | static-hindsight (ceiling) | 0.905 ± 0.010 | 7.6% | 0.0% | 2.8% | 0.0% | 0 |
-| prior-frozen | 0.700 ± 0.021 | 4.7% | 0.3% | 20.5% | 0.5% | 1 |
-| bandit (full) | **0.834 ± 0.012** | 4.7% | 6.5% | **1.4%** | 19.6% | 38 |
-| bandit (realistic, 2%) | 0.710 ± 0.024 | 4.7% | 0.4% | 19.2% | 1.8% | 8 |
+| prior-frozen | 0.703 ± 0.020 | 4.7% | 0.0% | 20.5% | 0.0% | 1 |
+| bandit (full) | **0.837 ± 0.012** | 4.7% | 5.1% | **0.9%** | 20.1% | 42 |
+| bandit (realistic, 2%) | **0.739 ± 0.034** | 4.7% | 1.5% | 15.1% | 5.9% | 9 |
 
 - **With full feedback the bandit beats the tuned threshold by
-  +0.137 ± 0.012 reward per request, in 20 of 20 runs.** It learns to
+  +0.141 ± 0.012 reward per request, in 20 of 20 runs.** It learns to
   *redact* the drifted band instead of blocking it. Benign refusals fall
-  from 21.0% to 1.4%, and no extra attacks get through untouched (4.7%
+  from 21.0% to 0.9%, and no extra attacks get through untouched (4.7%
   either way); the attacks in that band are redacted rather than blocked
-  (6.5%). The learning curve rises across the stream: 0.805, 0.842, 0.844,
-  0.845 mean reward per quarter.
+  (5.1%). The learning curve rises across the stream: 0.820, 0.843, 0.843,
+  0.844 mean reward per quarter.
 - **Learning does this, not the prior.** prior-frozen behaves like the
-  static threshold (0.700). Bandit minus prior-frozen: +0.134, 20 of 20
+  static threshold (0.703). Bandit minus prior-frozen: +0.135, 20 of 20
   runs.
 - **The hindsight threshold scores higher (0.905), but only with
   hindsight.** It picks a threshold above the drifted band *using the
   stream's own labels*, and lets 7.6% of attacks through instead of 4.7%.
   A deployed static threshold has no way to find that value as traffic
   changes; the bandit gets most of the way there from feedback.
-- **The production feedback rate is the bottleneck.** At 2% spot checks
-  (~28 labels per 1,000 requests) the gain is small but consistent: +0.014,
-  better in 20 of 20 runs. It scales with the labelling budget:
+- **The production feedback rate is still the bottleneck.** At 2% spot
+  checks (~29 labels per 1,000 requests) the gain is +0.042 ± 0.040, better
+  in 20 of 20 runs, and the learning curve is still climbing at the end of
+  the stream (0.703, 0.720, 0.755, 0.778 per quarter) - a longer stream
+  would gain more. It scales with the labelling budget:
 
 | Spot-check rate | Labels / 1k requests | Mean reward | Benign refused |
 |---|---|---|---|
-| 2% (default) | 28 | 0.710 ± 0.024 | 19.2% |
-| 5% | 61 | 0.761 ± 0.033 | 12.2% |
-| 10% | 114 | 0.797 ± 0.025 | 6.6% |
-| 25% | 270 | 0.818 ± 0.015 | 3.1% |
+| 2% (default) | 29 | 0.739 ± 0.034 | 15.1% |
+| 5% | 66 | 0.792 ± 0.038 | 7.7% |
+| 10% | 122 | 0.820 ± 0.017 | 3.5% |
+| 25% | 271 | 0.832 ± 0.012 | 1.8% |
 
 A deployment that suspects drift (a new team, a new app, a classifier
 update) can raise `BANDIT_SPOT_CHECK_RATE` for a while and lower it again
@@ -350,8 +354,8 @@ once the policy settles.
    labelled tuning set.
 2. **Where the classifier is systematically wrong in a score band, the
    bandit recovers from feedback and a static threshold can't.** Against
-   static-tuned's 0.697: +0.137 reward per request with full feedback,
-   +0.100 at a 10% spot-check rate, +0.014 at the 2% default.
+   static-tuned's 0.697: +0.141 reward per request with full feedback,
+   +0.123 at a 10% spot-check rate, +0.042 at the 2% default.
 3. **It can't fix errors at the extremes of the score range.** The 4–5% of
    attacks the classifier scores as benign (almost all below 0.01) look
    identical to benign traffic to every policy. That's the classifier's limit (L5-1); the fix is a better
@@ -359,6 +363,32 @@ once the policy settles.
 
 Simulation caveats: rewards come from the documented proxy table, not
 measured business cost; labels arrive instantly (in production they arrive
-when a reviewer gets to them); time-of-day and team-rate features are random
-noise offline; Experiment C's drift band is constructed (from measured
-examples), not observed traffic.
+when a reviewer gets to them); the benchmarks have no PII and no system
+prompts, so those features are constant offline; Experiment C's drift band
+is constructed (from measured examples), not observed traffic.
+
+## Changes since the first run (2026-10-07 → 2026-10-10)
+
+The first run (commit `cce8e44`) reported +0.137 (full feedback), +0.100
+(10% spot checks) and +0.014 (2%) under drift, and a tie elsewhere. A gap
+analysis of module 6a (LIMITATIONS.md L6a-10 to L6a-25) changed the bandit:
+
+- **Feature layout v2:** time of day and the team's request rate removed
+  (fitted noise; the rate was attacker-controlled). The prior now spans
+  the full range of window and PII counts, and a system-prompt
+  interaction feature was added.
+- **Prior ridge 1.0 → 0.01:** the warm-start bands now match reward.py's
+  design (0.34 / 0.58 / 0.81; v1 measured 0.23 / 0.56 / 0.88), and no
+  combination of attacker-chosen counts makes a
+  decision laxer.
+- **Discount 0.999 on real feedback:** recovery from a drift that lasted
+  5,000 labels takes 144 opposite labels instead of 793.
+- **`redact_and_allow` masked at ≥ 0.999.** A mask at 0.95 was tried
+  first: it cut the full-feedback drift gain to +0.029 (and 2% to +0.005),
+  because the measured false positives sit at 0.95–0.995 and redacting them
+  is how the bandit recovers. 0.999 still covers 168 of 190 held-out attacks.
+
+Effect: the i.i.d. and base-rate results are unchanged (still a tie). Under
+drift, the full-feedback gain is about the same (+0.141 vs +0.137), and the
+realistic gains are larger: +0.042 vs +0.014 at the 2% default, +0.123 vs
++0.100 at 10%. Discounting lets the scarce labels move the policy sooner.

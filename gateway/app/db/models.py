@@ -57,6 +57,9 @@ class ThreatLabel(StrEnum):
 class ReviewStatus(StrEnum):
     PENDING = "pending"
     REVIEWED = "reviewed"
+    # Not decided within BANDIT_REVIEW_TTL_DAYS; no longer decidable and
+    # never learned from. See app/core/defense/review_queue.py.
+    EXPIRED = "expired"
 
 
 class ReviewReason(StrEnum):
@@ -66,6 +69,9 @@ class ReviewReason(StrEnum):
     # the bandit didn't escalate still get labelled feedback. The request
     # itself was already handled by the chosen action.
     SPOT_CHECK = "spot_check"
+    # An allowed request made the model leak its system prompt. The bandit
+    # already learned from that at reduced weight; a human verdict replaces it.
+    OUTPUT_SCAN = "output_scan"
 
 
 class RewardSource(StrEnum):
@@ -208,10 +214,21 @@ class ThreatEvent(Base):
     # what module 8 plots as the bandit's confidence bounds.
     arm_scores: Mapped[dict[str, Any]] = mapped_column(_JSONB, nullable=False)
     action_taken: Mapped[DefenseAction] = mapped_column(String(20), nullable=False)
+    # What actually happened to the request, when that differs from the arm
+    # the bandit chose: a redact whose stripped text still scored high was
+    # blocked; an escalation past the team's review cap was blocked. The
+    # reward is the outcome's, credited to the chosen arm - that is what
+    # pulling the arm earned here. NULL = the action was carried out as is.
+    outcome: Mapped[DefenseAction | None] = mapped_column(String(20), nullable=True)
     bandit_confidence: Mapped[float] = mapped_column(Float, nullable=False)
     escalation_bias: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     reward_applied: Mapped[float | None] = mapped_column(Float, nullable=True)
     reward_source: Mapped[RewardSource | None] = mapped_column(String(20), nullable=True)
+    # Weight the reward was applied with and the chosen arm's update step
+    # at that moment - what LinUCB.revert needs to withdraw it later (a
+    # human verdict replacing an output-scan label, or an amended verdict).
+    reward_weight: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reward_step: Mapped[int | None] = mapped_column(Integer, nullable=True)
     rewarded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     human_label: Mapped[ThreatLabel | None] = mapped_column(String(10), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -243,6 +260,11 @@ class ReviewQueueItem(Base):
     decision: Mapped[ThreatLabel | None] = mapped_column(String(10), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Earlier verdicts this item had before an amendment, oldest first:
+    # [{"decision", "reviewer", "reviewed_at", "amended_by", "amended_at"}].
+    amendments: Mapped[list[dict[str, Any]]] = mapped_column(
+        _JSONB, nullable=False, default=list
+    )
 
     threat_event: Mapped["ThreatEvent"] = relationship()
 

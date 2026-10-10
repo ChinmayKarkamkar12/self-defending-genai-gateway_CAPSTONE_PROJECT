@@ -43,6 +43,7 @@ class ReviewItemOut(BaseModel):
     reason: ReviewReason
     status: ReviewStatus
     action_taken: DefenseAction
+    outcome: DefenseAction
     threat_score: dict[str, float]
     bandit_confidence: float
     prompt_excerpt: str
@@ -50,6 +51,7 @@ class ReviewItemOut(BaseModel):
     reviewer: str | None
     decision: ThreatLabel | None
     reviewed_at: datetime | None
+    amendments: list[dict[str, Any]]
 
 
 class ReviewDecisionIn(BaseModel):
@@ -104,6 +106,7 @@ def _item_out(item: ReviewQueueItem) -> ReviewItemOut:
         reason=item.reason,
         status=item.status,
         action_taken=event.action_taken,
+        outcome=event.outcome or event.action_taken,
         threat_score=event.threat_score,
         bandit_confidence=event.bandit_confidence,
         prompt_excerpt=item.prompt_excerpt,
@@ -111,6 +114,7 @@ def _item_out(item: ReviewQueueItem) -> ReviewItemOut:
         reviewer=item.reviewer,
         decision=item.decision,
         reviewed_at=_as_utc(item.reviewed_at) if item.reviewed_at else None,
+        amendments=list(item.amendments or []),
     )
 
 
@@ -122,7 +126,9 @@ async def get_review_queue(
     db: AsyncSession = Depends(get_db),  # noqa: B008 - standard FastAPI DI pattern
 ) -> list[ReviewItemOut]:
     items = await review_queue.list_items(db, status=status, limit=limit, offset=offset)
-    return [_item_out(item) for item in items]
+    out = [_item_out(item) for item in items]
+    await db.commit()  # list_items expires stale items first
+    return out
 
 
 @router.post("/review-queue/{item_id}/decide", response_model=ReviewDecisionOut)
@@ -136,7 +142,33 @@ async def decide_review_item(
     except review_queue.ReviewItemNotFound:
         raise HTTPException(status_code=404, detail="review item not found") from None
     except review_queue.ReviewItemAlreadyDecided:
-        raise HTTPException(status_code=409, detail="review item already decided") from None
+        raise HTTPException(
+            status_code=409, detail="review item already decided; use /amend to change it"
+        ) from None
+    except review_queue.ReviewItemExpired:
+        raise HTTPException(status_code=409, detail="review item expired") from None
+    return _decision_out(outcome)
+
+
+@router.post("/review-queue/{item_id}/amend", response_model=ReviewDecisionOut)
+async def amend_review_item(
+    item_id: UUID,
+    body: ReviewDecisionIn,
+    db: AsyncSession = Depends(get_db),  # noqa: B008 - standard FastAPI DI pattern
+) -> ReviewDecisionOut:
+    """Change an already-decided verdict: the old reward is withdrawn from
+    the bandit and the new one applied. The old verdict and who amended it
+    are kept on the item."""
+    try:
+        outcome = await review_queue.amend(db, item_id, body.decision, body.reviewer)
+    except review_queue.ReviewItemNotFound:
+        raise HTTPException(status_code=404, detail="review item not found") from None
+    except review_queue.ReviewItemNotDecided:
+        raise HTTPException(status_code=409, detail="review item has not been decided") from None
+    return _decision_out(outcome)
+
+
+def _decision_out(outcome: review_queue.DecisionOutcome) -> ReviewDecisionOut:
     return ReviewDecisionOut(
         item=_item_out(outcome.item),
         reward_applied=outcome.reward,
@@ -204,6 +236,8 @@ async def get_bandit_stats(
     def per_action(counts: Any) -> dict[DefenseAction, int]:
         return {action: int(counts[action.value]) for action in ACTIONS}
 
+    pending = await review_queue.count_pending(db)
+    await db.commit()  # count_pending expires stale items first
     return BanditStatsOut(
         window_from=window_from,
         window_to=window_to,
@@ -211,7 +245,7 @@ async def get_bandit_stats(
         updates_per_action={
             action: int(n) for action, n in zip(ACTIONS, bandit.update_counts, strict=True)
         },
-        pending_reviews=await review_queue.count_pending(db),
+        pending_reviews=pending,
         action_counts=per_action(action_counts),
         timeline=[
             TimelineBucket(bucket_start=start, counts=per_action(c), total=sum(c.values()))

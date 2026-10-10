@@ -61,9 +61,31 @@ class Settings(BaseSettings):
     # Safety mask: above this attack probability, `allow` is never an
     # option, however the learned policy (or exploration) scores it.
     BANDIT_ALLOW_MASK_THRESHOLD: float = Field(default=0.99, gt=0.0, le=1.0)
+    # Same for `redact_and_allow`: a near-certain attack is blocked or
+    # escalated, never stripped and passed on. Deliberately not lower: the
+    # measured false positives sit at 0.95-0.995, and redacting them is how
+    # the bandit recovers from that drift (0.95 here cut the drift result
+    # in training/README.md from +0.139 to +0.029 reward/request).
+    BANDIT_REDACT_MASK_THRESHOLD: float = Field(default=0.999, gt=0.0, le=1.0)
     # redact_and_allow strips every window whose attack probability is at
     # least this.
     BANDIT_REDACT_WINDOW_THRESHOLD: float = Field(default=0.5, gt=0.0, le=1.0)
+    # ...but nothing is cut when no window reaches this: a near-benign
+    # request the bandit chose to redact goes through unchanged.
+    BANDIT_REDACT_MIN_WINDOW: float = Field(default=0.3, ge=0.0, le=1.0)
+    # Forgetting: each update to an arm first multiplies its earlier real
+    # feedback by this (effective memory ~1/(1-x) labels per arm). 1.0 =
+    # never forget. The warm-start prior is never discounted.
+    BANDIT_DISCOUNT: float = Field(default=0.999, gt=0.9, le=1.0)
+    # Weight of the automatic label from a system-prompt leak, relative to
+    # a human verdict (1.0). The leak check only ever produces attack labels
+    # on allowed requests, so at full weight it skews learning one way.
+    BANDIT_OUTPUT_SCAN_WEIGHT: float = Field(default=0.2, gt=0.0, le=1.0)
+    # Review-queue flood protection: at most this many pending items per
+    # team (further escalations become blocks and nothing more is queued),
+    # and pending items expire, unlearned, after this many days.
+    BANDIT_REVIEW_TEAM_CAP: int = Field(default=20, ge=1)
+    BANDIT_REVIEW_TTL_DAYS: float = Field(default=7.0, gt=0.0)
     # Share of non-escalated decisions also queued for human review, so
     # allow/redact/block keep getting labelled feedback.
     BANDIT_SPOT_CHECK_RATE: float = Field(default=0.02, ge=0.0, le=1.0)

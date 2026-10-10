@@ -236,13 +236,12 @@ def run_bandit(
     regime: str,
     spot_check_rate: float | None = None,
 ) -> tuple[dict[str, float], list[float]]:
-    """One online run. Context features the offline data doesn't have
-    (time of day, team request rate) are drawn at random, as they'd vary
-    in production; PII counts are 0 (the benchmarks contain none)."""
+    """One online run. PII counts are 0 and there is no system prompt (the
+    benchmarks have neither)."""
     rng = np.random.default_rng(seed)
     if spot_check_rate is None:
         spot_check_rate = settings.BANDIT_SPOT_CHECK_RATE
-    bandit = new_bandit(alpha=settings.BANDIT_ALPHA, seed=seed)
+    bandit = new_bandit(alpha=settings.BANDIT_ALPHA, gamma=settings.BANDIT_DISCOUNT, seed=seed)
     tally = Tally()
     for row in stream:
         x = build_features(
@@ -251,11 +250,13 @@ def run_bandit(
                 scan_windows=row.windows,
                 scan_truncated=row.truncated,
                 pii_entity_count=0,
-                hour_utc=float(rng.uniform(0, 24)),
-                team_requests_this_minute=int(rng.integers(1, 31)),
             )
         )
-        masked = safety_mask(row.p_attack, settings.BANDIT_ALLOW_MASK_THRESHOLD)
+        masked = safety_mask(
+            row.p_attack,
+            settings.BANDIT_ALLOW_MASK_THRESHOLD,
+            settings.BANDIT_REDACT_MASK_THRESHOLD,
+        )
         action = bandit.select(x, masked=masked).action
         reward = tally.record(row, action)
         if not learn:
@@ -527,6 +528,8 @@ def main() -> None:
         "settings": {
             "bandit_alpha": settings.BANDIT_ALPHA,
             "allow_mask_threshold": settings.BANDIT_ALLOW_MASK_THRESHOLD,
+            "redact_mask_threshold": settings.BANDIT_REDACT_MASK_THRESHOLD,
+            "discount": settings.BANDIT_DISCOUNT,
             "spot_check_rate": settings.BANDIT_SPOT_CHECK_RATE,
         },
         "experiment_a_iid": experiment_a(data),

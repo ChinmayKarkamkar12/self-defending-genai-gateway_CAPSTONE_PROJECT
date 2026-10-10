@@ -1,13 +1,14 @@
-import math
-
 import numpy as np
 import pytest
 
 from app.core.defense.features import (
     FEATURE_NAMES,
+    FEATURE_VERSION,
     N_FEATURES,
+    SYSTEM_WEIGHT,
     FeatureInputs,
     build_features,
+    effective_attack_probability,
     features_from_dict,
     features_to_dict,
 )
@@ -23,7 +24,7 @@ def test_vector_layout_matches_documented_names():
 
 
 def test_dict_roundtrip():
-    x = build_features(FeatureInputs(threat_score=BENIGN, pii_entity_count=3, hour_utc=7.5))
+    x = build_features(FeatureInputs(threat_score=BENIGN, pii_entity_count=3))
     assert np.array_equal(features_from_dict(features_to_dict(x)), x)
 
 
@@ -35,14 +36,12 @@ def test_values_are_scaled_and_capped():
                 scan_windows=500,
                 scan_truncated=True,
                 pii_entity_count=99,
-                team_requests_this_minute=10_000,
             )
         )
     )
     assert x["scan_windows"] == 1.0
     assert x["scan_truncated"] == 1.0
     assert x["pii_entities"] == 1.0
-    assert x["team_request_rate"] == 1.0
     assert x["system_prompt_attack"] == 0.0
 
 
@@ -56,10 +55,53 @@ def test_attack_logit_separates_saturated_scores():
     assert -1.0 <= logit(0.0) < logit(0.5) == 0.0 < logit(1.0) <= 1.0
 
 
-def test_hour_on_unit_circle():
-    x = features_to_dict(build_features(FeatureInputs(threat_score=BENIGN, hour_utc=6.0)))
-    assert math.isclose(x["hour_sin"], 1.0)
-    assert abs(x["hour_cos"]) < 1e-9
+def test_v2_layout_has_no_clock_or_rate_features():
+    # Removed in FEATURE_VERSION 2: fitted noise, and the rate was
+    # attacker-controlled (features.py docstring).
+    assert FEATURE_VERSION == 2
+    for removed in ("hour_sin", "hour_cos", "team_request_rate"):
+        assert removed not in FEATURE_NAMES
+
+
+def test_system_prompt_features():
+    def features(p_conv, p_system):
+        return features_to_dict(
+            build_features(
+                FeatureInputs(
+                    threat_score={"benign": 1 - p_conv, "prompt_injection": p_conv, "jailbreak": 0},
+                    system_prompt_threat_score={
+                        "benign": 1 - p_system,
+                        "prompt_injection": p_system,
+                        "jailbreak": 0,
+                    },
+                )
+            )
+        )
+
+    x = features(0.5, 0.8)
+    assert x["system_prompt_attack"] == pytest.approx(0.8)
+    assert x["system_x_conversation"] == pytest.approx(0.4)
+
+
+def test_effective_attack_probability():
+    def p_eff(p_conv, p_system=None):
+        system = (
+            None
+            if p_system is None
+            else {"benign": 1 - p_system, "prompt_injection": p_system, "jailbreak": 0}
+        )
+        return effective_attack_probability(
+            FeatureInputs(
+                threat_score={"benign": 1 - p_conv, "prompt_injection": p_conv, "jailbreak": 0},
+                system_prompt_threat_score=system,
+            )
+        )
+
+    assert p_eff(0.4) == pytest.approx(0.4)
+    # A fully flagged system prompt alone stays in the allow band (< 0.33).
+    assert p_eff(0.0, 1.0) == pytest.approx(SYSTEM_WEIGHT)
+    assert SYSTEM_WEIGHT < 0.33
+    assert p_eff(0.5, 1.0) == pytest.approx(1 - 0.5 * (1 - SYSTEM_WEIGHT))
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
