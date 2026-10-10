@@ -134,11 +134,102 @@
     - With a temporary 100%-spot-check override (scratchpad compose file), decide "attack" then amend "benign" on real Postgres gave `bandit_state` version 3, update counts `[1,0,0,0]` and arm steps `[2,0,0,0]`. The event holds the amended +1.0 at weight 1; the history is in `amendments`.
     - The stack was restored to normal config and stopped with `docker compose down`.
 
+- [x] Module 6b: Adaptive defense - RL session agent. Completed 2026-10-10, built on `main` directly (same pattern as modules 2-6a).
+  - **What was built:**
+    - session tracking;
+    - a rule-based fallback, which is the default policy;
+    - a simulator built on 6a's real decision code;
+    - a DQN trained with stable-baselines3 and evaluated three ways.
+  - **Go/no-go: NO-GO.** The rule stays the default; the DQN ships as an opt-in.
+  - **Pre-build gap analysis** (memory note `project_module_6b_gap_analysis`):
+    - Measured: `escalation_bias` only changes 6a's decision for p 0.2-0.9 (at +1.0, p < 0.2 is still allowed). That is about 1% of held-out traffic, while 8/190 attacks score < 0.2.
+    - So `tighten`/`relax` alone can't beat maintain-only. The value has to come from `challenge`/`lockout` acting on session history.
+    - The user approved the recommended decisions:
+      1. widen the 6a contract with `challenge` + `lock` keys;
+      2. a time-limited per-key lock with admin unlock (never revokes the key);
+      3. key-level sessions;
+      4. a measurable go/no-go criterion instead of the roadmap's calendar date.
+  - **Code, gateway:**
+    - `app/core/defense/session.py`: atomic Lua sliding-window session IDs, Redis session state, lock/unlock.
+    - `app/core/defense/rl/`:
+      - `features.py`: the 14-feature state;
+      - `actions.py`: action effects and guards;
+      - `reward.py`, `simulator.py`, `fallback_policy.py`;
+      - `dqn.py`: numpy runtime;
+      - `policy.py`: the config-selected policy;
+      - `dqn_policy.npz`: the shipped weights.
+    - Stages:
+      - `session_guard.py`: the first pre-call stage (lock check + session ID);
+      - `session_policy.py`: runs after the pre-call stages, whether they allowed or blocked.
+    - `app/api/session_admin.py`: `GET /v1/admin/sessions`, `GET /v1/admin/sessions/{id}/risk-trend`, `POST /v1/admin/sessions/unlock/{api_key_id}`.
+    - Migration `0006_session_agent`: the `session_policy_events` table; `threat_events.session_id` and `forced_escalation`.
+  - **Code, changes to 6a:**
+    - `escalation.py` gained the writer and the challenge key.
+    - `bandit_policy.py` consumes a pending challenge (forced escalate) and tags events with the session.
+  - **Code, training:** `training/generate_sessions.py`, `rl_env.py`, `train_rl_agent.py`, `evaluate_rl_agent.py`.
+  - **Deviations from the module plan** (all documented in the code and in LIMITATIONS):
+    1. `challenge` and `lockout` need keys beyond `escalation_bias` (contract widened, approved).
+    2. No `request_rate` / `session_age` / `budget_fraction_remaining` features (L6b-8):
+       - there is no real timing data, so the simulator would have to invent it;
+       - they are attacker-controlled (6a's L6a-11 lesson);
+       - budgets are per team and opt-in.
+    3. Reward = the plan's terminal table + 0.2 x 6a's per-request reward + optional shaping in potential-based form. The request reward makes a lockout cost every remaining request it refuses; under the table alone, lockout dominates tighten.
+    4. Guard: `lockout` needs at least one refused request in the session. It applies to every policy, in the simulator too.
+    5. The DQN runs in the gateway as a numpy forward pass over exported weights. No stable-baselines3, gymnasium or pickle in the image.
+    6. The simulator core lives in the gateway (`rl/simulator.py`, plain numpy, CI-tested). `training/rl_env.py` is a thin gymnasium wrapper.
+    7. The training attack-session rate is 20%, not 50%:
+       - a 20k-step smoke run at 50% flagged 82% of benign sessions;
+       - the cause: the plan's table pays for intervening whether or not it changes anything, so blind intervention is optimal when P(attack) > 0.3 (L6b-5);
+       - that smoke run was scored on test sessions. This is disclosed in training/README.md; nothing else was tuned on test.
+  - **Evaluation** (training/README.md, "Session agent evaluation"): 3,000 paired sessions per preset on test prompts; 5 seeds x shaping on/off, 200k steps each.
+    - The shaped DQN (5-seed mean) beats both baselines on return on all 4 presets.
+      - Standard: return 2.101 vs rule 1.952 vs maintain 1.678; breaches 10.2% vs 14.4% vs 19.3%.
+      - Shifted world: return 2.657 vs rule 2.325; breaches 36.7% vs 44.2%.
+    - **NO-GO.** The criterion: >= 4/5 seeds beat both baselines (95% CI > 0) on every preset, AND benign lockout <= rule + 1 pt.
+      - Shaping: 2/5 seeds pass. All 5 win on return, but seeds 1, 2 and 4 lock out 1.7-4.2% of benign sessions vs the rule's 0.8%.
+      - No shaping: 0/5 seeds pass. Seeds 0 and 2 collapse below maintain-only.
+    - The ablation went against my prediction: potential-based shaping made training much more stable (0/5 vs 2/5 collapses).
+    - Viva framing: RL finds the session-memory effect the rule can't (intervene after one refusal plus a high score), but not reliably. The plan's reward under-prices wrongful lockouts, so the reward is the bottleneck, not the algorithm (L6b-5, L6b-10).
+    - The opt-in `dqn_policy.npz` is shaping seed 0, chosen on validation sessions among the 2 criterion-passing seeds. On validation vs the rule: return 2.13 vs 1.93, breaches 7.4% vs 10.7%, benign lockout 0.1% vs 0.8%.
+  - **Definition of Done:**
+    - Simulator built and validated against scripted sessions:
+      - `test_rl_env.py` covers termination, give-up, breach, lockout, the reward table, shaping telescoping (potential-based), the bias acting through 6a's real bandit, the blind spot that only `challenge` catches, and reproducibility;
+      - `generate_sessions.py` prints generator statistics, and the train and test statistics match.
+    - Rule-based fallback implemented, tested (`test_fallback_policy.py`), and active by default via `SESSION_POLICY=rule`.
+    - DQN trained; the go/no-go decision is made and documented (NO-GO).
+    - Three-way evaluation documented with real numbers.
+    - Integration with 6a verified end to end, live in Docker (below) and in `test_session_integration.py`, which covers:
+      - the bias written by 6b, then read and acted on by 6a;
+      - lockout and unlock;
+      - a challenge forcing exactly one review;
+      - the config-only policy swap;
+      - the risk-trend endpoint;
+      - no PII in session state;
+      - a policy failure failing closed.
+    - **267 tests pass locally** (213 -> 267), `ruff check` clean.
+    - Clean-container CI simulation of the gateway commit (`python:3.11`, exact `ci.yml` commands): ruff clean, 256 passed, 11 skipped, exit 0. The skips are the 10 real-model tests plus the shipped-weights test (no weights had shipped yet).
+  - **Live verification** (Docker with real Postgres, Redis and classifier, 2026-10-10):
+    - Migration 0006 applied; `\d` matches the models (JSONB, indexes, FKs, `forced_escalation` default false). The downgrade 0005 -> upgrade head round trip is clean.
+    - Default rule policy:
+      - a benign request reached the provider;
+      - 4 injections were blocked; the rule ran maintain, maintain, tighten, tighten, lockout;
+      - 6a read bias 0.25 and 0.5 on the following requests;
+      - the next benign request was refused by the lock;
+      - risk-trend showed all of it plus the live state.
+    - Redis keys all have TTLs (lock ~900 s, session state 2x the idle window).
+    - The raw email in the injections appeared 0 times in Redis, Postgres and the gateway logs.
+    - After unlock, the next request reached the provider in a fresh session.
+    - With a scratchpad compose override `SESSION_POLICY=dqn` (no code change), the shipped agent ran: it relaxed after a benign request, then tightened on each refusal up to 1.0.
+    - Stack restored to the default and stopped with `docker compose down`.
+  - New settings (all optional): `SESSION_IDLE_SECONDS` (1800), `SESSION_POLICY` (rule), `SESSION_POLICY_EVERY_N` (1), `SESSION_POLICY_EVERY_SECONDS` (60), `SESSION_LOCK_SECONDS` (900), `SESSION_DQN_WEIGHTS` (default: the shipped file).
+  - New training-only deps in `training/requirements.txt`: `stable-baselines3==2.9.0`, `gymnasium`.
+  - Tests: `conftest.py` now defaults `SESSION_POLICY` to `maintain`, so 6a's tests measure 6a alone. One 6a round-trip test otherwise saw the rule tighten its session. 6b's tests opt in.
+  - Limitations L6b-1 to L6b-10 added to `LIMITATIONS.md`; L6a-9 resolved; L6a-26 is now Planned under module 10 (see L6b-7).
+
 ## In progress
 (none yet)
 
 ## Not started
-- [ ] Module 6b: Adaptive defense — RL session agent
 - [ ] Module 7: Audit logging
 - [ ] Module 8: Admin dashboard
 - [ ] Module 9: Testing strategy
@@ -147,7 +238,7 @@
 
 ## Notes for next session
 - **`LIMITATIONS.md` is the living register of known limitations.** Add entries when a module ships with one; when something in an entry's "Unblocked by" column becomes available, revisit it; mark fixed ones `Resolved` (don't delete them).
-- **Next up: Module 6b (RL session agent). Module 6a's Definition of Done is met and the 2026-10-10 hardening pass is done, so 6b is unblocked.** 6b's contract with 6a is the Redis key `defense:session:{session_id}:escalation_bias` (`app/core/defense/escalation.py`; float **clamped to [-0.3, 1.0]** since the hardening pass (was [-1, 1]), positive = stricter). The team request rate was removed from 6a's features, so rate and burst signals are 6b's to use. 6a's `threat_events` now also has `outcome` (what actually happened when it differs from `action_taken`). 6a reads it whenever `ctx.metadata["session_id"]` is set; nothing sets it yet, and deriving session IDs is 6b's job. 6a's per-request action history for 6b's state is in the `threat_events` table (action_taken, threat_score, bandit_confidence, escalation_bias, created_at, team_id/api_key_id). The 6b simulator should call 6a's real decision function (`new_bandit(gamma=...)`, `LinUCB.select` with `escalation_bias`, plus `safety_mask(p, allow_thr, redact_thr, p_system)`) rather than reimplement it (6b plan section 4). Build 6b's rule-based fallback before any DQN training (CLAUDE.md hard rule).
+- **Next up: Module 7 (audit logging).** 6b is done: NO-GO on the DQN, so the rule-based fallback is the default and the DQN is opt-in via `SESSION_POLICY=dqn`. For module 7: `session_policy_events` holds every session-agent run (policy, proposed/actual action, bias before/after, numeric features), and `threat_events.session_id` / `forced_escalation` link 6a decisions to sessions. 6b is committed locally but not pushed yet: ask before pushing, then record the push and the CI result in a separate PROGRESS commit. Before pushing, re-run the clean-container CI simulation on the final commit: the shipped-weights test now runs instead of skipping.
 - Docker stack: run `docker compose up -d --build` (never plain `up -d` after changing code or requirements - if the build fails, plain `up` silently runs the old image), then `docker compose exec gateway alembic upgrade head` and `docker compose exec gateway python -m scripts.seed` (must be `-m`; `python scripts/seed.py` fails with `No module named 'app'`). The gateway won't start unless `training/checkpoints/final/` exists on the host.
 - The trained checkpoint lives only on this machine at `training/checkpoints/final/` (gitignored, ~700 MB). A fresh clone must re-run `training/prepare_dataset.py` + `training/train_classifier.py` (~40-45 min on the RTX 3050) before the gateway can start, since the lifespan hook loads it at startup. The Docker image doesn't include it yet — mounting it / setting `THREAT_MODEL_DIR` is module 10's job.
 - Training on the 4 GB RTX 3050 nearly fills VRAM, and later epochs slow down ~20x (3 it/s -> ~6 s/it) as memory spills to shared RAM. It still completes; reduce batch size or `MAX_LENGTH` if a future run needs to be faster.

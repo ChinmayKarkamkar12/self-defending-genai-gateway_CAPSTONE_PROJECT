@@ -413,3 +413,152 @@ window counts real prompts have (v1's prior only drew 1-8 windows), though
 that part wasn't isolated further. Offline the two removed features were
 random by construction; in production they would vary too and carry no
 reward signal, so the effect is not an evaluation artefact.
+
+# Session agent evaluation (Module 6b)
+
+Three-way comparison required by project_plan/06b-adaptive-defense-rl-session-agent.md §8:
+a DQN session agent vs. a maintain-only baseline vs. the rule-based fallback
+("tighten after 2 consecutive refused requests, lock out after 4").
+
+## Reproduce
+
+```bash
+# needs training/data/bandit_scores_{val,test}.jsonl (created by evaluate_bandit.py)
+gateway/.venv/Scripts/python.exe -m pip install -r training/requirements.txt   # adds stable-baselines3, gymnasium
+gateway/.venv/Scripts/python.exe training/generate_sessions.py      # what the simulated sessions look like
+gateway/.venv/Scripts/python.exe training/train_rl_agent.py         # 10 agents, ~4 min each on CPU
+gateway/.venv/Scripts/python.exe training/evaluate_rl_agent.py      # tables below + go/no-go
+```
+
+## Setup
+
+- **Environment** (`gateway/app/core/defense/rl/simulator.py`): each simulated request is a real
+  held-out prompt with its cached production-classifier score, decided by module 6a's real code
+  (`build_features`, `safety_mask`, warm-started `LinUCB.select` with the session's bias). Only the
+  session structure is simulated. Benign sessions: 20% of users are false-positive-prone (the L5-2
+  band, 0.95-0.995). Attack sessions: 1-3 benign-looking probes, then attempts by an attacker who
+  retries after a refusal (85%) and stops after a breach. Training sessions use **val** prompts;
+  evaluation uses **test** prompts.
+- **What the session agent can change.** Measured on the warm-start bandit, even at bias +1.0
+  anything the classifier scores below 0.2 is still allowed. Only requests scored 0.2-0.9 change
+  decision, about 1% of held-out traffic. 8/190 held-out attacks score below 0.2 (the blind spot), so
+  under maintain-only a persistent attacker eventually gets one through: 19% of attack sessions
+  breach (65% in the shifted world). `tighten` can't stop that. `challenge` and `lockout` can,
+  because they act on the session's history, and that is where sequential decision-making has
+  something to do.
+- **Reward** (`rl/reward.py`) has three parts:
+  - the plan's terminal table: benign session +1.0, or -0.5 if the agent intervened; attack session
+    +1.5 if it intervened, -2.0 if not; any breach -2.0;
+  - 0.2 x module 6a's reward for each request's outcome (a lockout refuses every remaining request);
+  - optional potential-based shaping on the session's max attack score.
+- **Agent:** stable-baselines3 DQN, 64-64 MLP, 200k steps (~30k episodes), 5 seeds, each trained with
+  and without shaping (the plan's ablation). The weights are exported to numpy; the gateway never
+  loads SB3 or pickle.
+- **Evaluation:** 3,000 sessions per preset, the same seed per session for every policy (paired),
+  with a 95% CI on the per-session return difference. Presets:
+  - `standard`: the training generator (20% attack sessions);
+  - `attack_heavy`: 50% attack sessions;
+  - `low_attack_rate`: 5% attack sessions;
+  - `shifted`: sessions of 5-25 requests, 30% of users FP-prone at 40% of their requests, up to 5
+    probes, 90% persistence, and an attacker who learns from refusals.
+
+**Disclosure.** The training attack-session rate was changed from 50% to 20% after a 20k-step smoke
+run. That run was trained at 50%, scored on test sessions, and flagged 82% of benign sessions. The
+cause is structural, not a tuning accident: the plan's table pays for *having intervened* whether or
+not the intervention changed anything, so intervening blind is optimal whenever P(attack) > 0.3
+(L6b-5). Nothing else was tuned on test sessions. The go/no-go criterion was written into
+`evaluate_rl_agent.py` before the full run.
+
+## Results (held-out test prompts, 3,000 sessions per preset)
+
+Each DQN row is the mean of 5 seeds. Columns:
+- **return**: mean episode reward;
+- **breach**: share of attack sessions in which an attack was allowed;
+- **benign friction**: share of benign requests refused;
+- **benign lockout**: share of benign sessions locked out.
+
+| preset | policy | return | breach | attack flagged | benign friction | benign flagged | benign lockout |
+|---|---|---|---|---|---|---|---|
+| standard | maintain | 1.678 | 0.193 | 0.000 | 0.071 | 0.000 | 0.000 |
+| | rule | 1.952 | 0.144 | 0.574 | 0.074 | 0.079 | 0.008 |
+| | DQN, no shaping | 1.767 | 0.071 | 0.815 | 0.098 | 0.378 | 0.046 |
+| | DQN, shaping | **2.101** | 0.102 | 0.701 | 0.083 | 0.049 | 0.018 |
+| attack_heavy | maintain | 0.496 | 0.175 | 0.000 | 0.069 | 0.000 | 0.000 |
+| | rule | 1.360 | 0.135 | 0.566 | 0.072 | 0.077 | 0.009 |
+| | DQN, no shaping | 1.697 | 0.055 | 0.823 | 0.097 | 0.378 | 0.044 |
+| | DQN, shaping | **1.728** | 0.084 | 0.713 | 0.081 | 0.046 | 0.017 |
+| low_attack_rate | maintain | 2.239 | 0.184 | 0.000 | 0.070 | 0.000 | 0.000 |
+| | rule | 2.228 | 0.141 | 0.577 | 0.073 | 0.078 | 0.008 |
+| | DQN, no shaping | 1.826 | 0.050 | 0.840 | 0.097 | 0.379 | 0.047 |
+| | DQN, shaping | **2.305** | 0.085 | 0.735 | 0.082 | 0.049 | 0.018 |
+| shifted | maintain | 2.381 | 0.646 | 0.000 | 0.130 | 0.000 | 0.000 |
+| | rule | 2.325 | 0.442 | 0.623 | 0.152 | 0.231 | 0.059 |
+| | DQN, no shaping | 2.375 | 0.262 | 0.707 | 0.169 | 0.387 | 0.079 |
+| | DQN, shaping | **2.657** | 0.367 | 0.523 | 0.145 | 0.086 | 0.029 |
+
+Per seed (DQN with shaping): the lower end of the 95% CI of the paired return difference vs. the
+rule, and the benign lockout rate. The rule's benign lockout rate is 0.008, 0.009, 0.008 and 0.059
+on the four presets.
+
+| seed | standard | attack_heavy | low_attack_rate | shifted | benign lockout (std / heavy / low / shifted) |
+|---|---|---|---|---|---|
+| 0 | +0.089 | +0.299 | +0.024 | +0.220 | 0.003 / 0.003 / 0.003 / 0.005 |
+| 1 | +0.128 | +0.408 | +0.025 | +0.326 | **0.040 / 0.039 / 0.042** / 0.055 |
+| 2 | +0.189 | +0.439 | +0.103 | +0.453 | **0.019** / 0.018 / 0.017 / 0.024 |
+| 3 | +0.046 | +0.100 | +0.051 | +0.078 | 0.001 / 0.001 / 0.001 / 0.003 |
+| 4 | +0.127 | +0.359 | +0.054 | +0.308 | **0.026 / 0.027 / 0.026** / 0.058 |
+
+(Bold = above the rule's rate + 1 point, which fails the go/no-go's safety condition.)
+
+## Go/no-go: NO-GO - the rule-based fallback stays the default
+
+The criterion, fixed before the run: a variant is GO if at least 4 of its 5 seeds, on every preset,
+1. beat both baselines with the 95% CI of the paired return difference above 0, **and**
+2. lock out benign sessions no more than the rule + 1 point.
+
+**DQN with shaping: 2/5 seeds pass.**
+- All 5 seeds beat both baselines on return on every preset (every CI above 0).
+- But seeds 1, 2 and 4 get there partly by locking out 2-5x more benign sessions than the rule
+  (1.7-4.2% vs 0.8%). The reward table prices a wrongful lockout at -0.06 per remaining request plus
+  -0.5. That is lower than a deployment should accept, since a session is a whole API key (L6b-1).
+- The two seeds that respect the lockout limit have less to show for it: seed 3 breaches more often
+  than the rule in the shifted world (0.61 vs 0.44).
+
+**DQN without shaping: 0/5 seeds pass.**
+- Seeds 0 and 2 learned to intervene in about 80% of benign sessions and lose to *maintain-only* on
+  three presets.
+- Seeds 1, 3 and 4 resemble the shaped agents.
+- Every learning curve rose (+0.55-0.62 → +1.67-1.85), so this is a bad local optimum, not a
+  failure to learn.
+
+So `SESSION_POLICY=rule` is the default. As the plan's §6 puts it: we attempted RL, validated it
+against a rule-based fallback, and here is what we found.
+
+## What the numbers say
+
+1. **RL does find something the rule can't.** On every preset the shaped agents (5-seed mean),
+   compared with the rule:
+   - earn a higher return;
+   - let fewer attacks through (standard 10.2% vs 14.4%; shifted 36.7% vs 44.2%);
+   - flag fewer benign sessions.
+
+   They intervene earlier in attack sessions, after one refusal plus a high score, instead of
+   waiting for two consecutive refusals. That is the session-memory effect the module was built for.
+2. **It doesn't do it reliably.** Two of five no-shaping seeds collapsed, and three of five shaped
+   seeds bought reward with wrongful lockouts. A policy whose safety depends on the training seed
+   shouldn't be the default.
+3. **Shaping mattered, contrary to the prediction.** Potential-based shaping can't change the
+   optimal policy, so we expected no effect. With a finite training budget it made training much
+   more stable (0/5 collapses vs 2/5). Theory allows this: shaping can change how fast and how
+   reliably the optimum is reached.
+4. **The reward table is the bottleneck, not the algorithm** (L6b-5). It pays for labelling
+   sessions and under-prices wrongful lockouts. A reward built from measured effects should come
+   before more RL tuning.
+
+**Shipped as an opt-in:** `gateway/app/core/defense/rl/dqn_policy.npz` is shaping seed 0.
+- It was chosen on *validation* sessions (val prompts, unseen seeds), from the two seeds that met
+  the criterion on every preset.
+- On validation, vs. the rule: return 2.13 vs 1.93, breaches 7.4% vs 10.7%, benign lockout 0.1% vs
+  0.8%.
+- Set `SESSION_POLICY=dqn` to run it; it was verified live in Docker.
+- It is not the default, because the variant as a whole failed the criterion.
