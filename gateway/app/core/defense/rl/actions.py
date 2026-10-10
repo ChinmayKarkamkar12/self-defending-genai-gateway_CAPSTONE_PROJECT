@@ -22,10 +22,14 @@ of what the session did before.
 Guards, applied to every policy's choice (rule, DQN, and in the simulator
 too, so offline numbers describe what runs):
 
-- `lockout` needs at least one refused request in the session. A session
-  whose every request was allowed has given no evidence at all, and since
-  a session is a whole API key (L6b-1) a wrong lockout refuses every user
-  of that key. The DQN never gets to lock out on request count alone.
+- `lockout` needs at least LOCKOUT_MIN_REFUSED (2) refused requests in
+  the session. Since a session is a whole API key (L6b-1), a wrong
+  lockout refuses every user of that key, so one refusal - which a
+  false-positive-prone benign user produces regularly - is not enough
+  evidence. (The first version required 1; raised after the first
+  evaluation found agents locking out too many benign sessions, L6b-10.)
+  The rule-based fallback locks out after 4 consecutive refusals, so this
+  never changes what it does.
 - `challenge` while one is already pending changes nothing.
 """
 from app.core.defense.bandit import clamp_bias
@@ -34,6 +38,7 @@ from app.db.models import SessionAction
 
 TIGHTEN_STEP = 0.25
 RELAX_STEP = 0.25
+LOCKOUT_MIN_REFUSED = 2
 
 # Fixed action order: the DQN's output index i means ACTION_ORDER[i].
 ACTION_ORDER: tuple[SessionAction, ...] = (
@@ -61,7 +66,7 @@ def next_bias(bias: float, action: SessionAction) -> float:
 
 def guard(action: SessionAction, snapshot: SessionSnapshot) -> SessionAction:
     """The action actually carried out (see the module docstring)."""
-    if action == SessionAction.LOCKOUT and snapshot.refused_count == 0:
+    if action == SessionAction.LOCKOUT and snapshot.refused_count < LOCKOUT_MIN_REFUSED:
         return SessionAction.MAINTAIN
     if action == SessionAction.CHALLENGE and snapshot.challenge_pending:
         return SessionAction.MAINTAIN

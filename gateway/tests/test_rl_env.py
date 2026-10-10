@@ -89,14 +89,18 @@ def test_breach_ends_the_session():
 
 def test_lockout_ends_the_session_and_refuses_the_rest():
     env = sim(attack_session_rate=1.0, min_probes=0, max_probes=0, min_length=6, max_length=6)
-    _, done, info = play(env, [L])
+    _, done, info = play(env, [M, L])  # 2 refused attempts, then lock out
     stats = info["episode"]
-    assert done and stats.locked_out and stats.locked_out_requests == 5
+    assert done and stats.locked_out and stats.locked_out_requests == 4
 
 
-def test_lockout_without_evidence_is_guarded():
+def test_lockout_without_enough_evidence_is_guarded():
     # Benign session, nothing refused: lockout is carried out as maintain.
     env = sim(attack_session_rate=0.0)
+    _, done, info = play(env, [L])
+    assert not done and info["taken"] == "maintain"
+    # One refused request isn't enough either.
+    env = sim(attack_session_rate=1.0, min_probes=0, max_probes=0)
     _, done, info = play(env, [L])
     assert not done and info["taken"] == "maintain"
 
@@ -125,16 +129,19 @@ def test_reward_matches_documented_table():
     rewards, _, _ = play(sim(attack_session_rate=0.0), [T, M, M])
     assert sum(rewards) == pytest.approx(0.6 - 0.5)
 
-    # Attack locked out after its first (blocked) request: 3 remaining
-    # requests counted as blocked attacks, + terminal +1.5.
+    # Attack locked out after its second (blocked) request: one blocked
+    # attempt (+0.1), then 2 remaining requests counted as blocked attacks,
+    # + terminal +1.5.
     env = sim(attack_session_rate=1.0, min_probes=0, max_probes=0)
-    rewards, _, _ = play(env, [L])
-    assert sum(rewards) == pytest.approx(3 * 0.2 * 0.5 + 1.5)
+    rewards, _, _ = play(env, [M, L])
+    assert sum(rewards) == pytest.approx(0.2 * 0.5 + 2 * 0.2 * 0.5 + 1.5)
 
-    # Locking out a benign session costs every remaining request.
+    # Locking out a benign session costs every remaining request, and the
+    # terminal reward is WRONGFUL_LOCKOUT_REWARD (-2.0), not -0.5.
     env = sim(benign_p=1.0, attack_session_rate=0.0)  # every benign request blocked
-    rewards, _, _ = play(env, [L])
-    assert sum(rewards) == pytest.approx(3 * 0.2 * -0.3 - 0.5)
+    rewards, _, _ = play(env, [M, L])
+    assert sum(rewards) == pytest.approx(0.2 * -0.3 + 2 * 0.2 * -0.3 - 2.0)
+    assert terminal_reward(ThreatLabel.BENIGN, intervened=True, locked_out=True) == -2.0
 
     # Breach: -2.0 even though the agent tightened.
     env = sim(attack_p=0.0, attack_session_rate=1.0, min_probes=1, max_probes=1)

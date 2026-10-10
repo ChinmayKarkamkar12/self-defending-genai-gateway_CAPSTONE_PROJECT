@@ -1,0 +1,6 @@
+{
+  "decision": "NO-GO",
+  "agent": "dqn_shaping_seed0",
+  "evaluated": "2026-10-10",
+  "note": "First evaluation (training/README.md). Opt-in only; SESSION_POLICY=auto uses the rule-based fallback."
+}

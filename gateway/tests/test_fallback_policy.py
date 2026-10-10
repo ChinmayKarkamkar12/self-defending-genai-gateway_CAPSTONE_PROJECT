@@ -46,10 +46,13 @@ def test_rule_parameters_validated():
         RuleBasedPolicy(tighten_after=5, lockout_after=4)
 
 
-def test_lockout_needs_a_refused_request():
+def test_lockout_needs_two_refused_requests():
     clean = SessionSnapshot(request_count=8, outcome_counts={"allow": 8})
     assert guard(SessionAction.LOCKOUT, clean) == SessionAction.MAINTAIN
-    assert guard(SessionAction.LOCKOUT, run(1)) == SessionAction.LOCKOUT
+    assert guard(SessionAction.LOCKOUT, run(1)) == SessionAction.MAINTAIN
+    assert guard(SessionAction.LOCKOUT, run(2)) == SessionAction.LOCKOUT
+    # Two refusals anywhere in the session count, not only in a row.
+    assert guard(SessionAction.LOCKOUT, run(0, refused=2)) == SessionAction.LOCKOUT
 
 
 def test_challenge_while_pending_is_a_no_op():

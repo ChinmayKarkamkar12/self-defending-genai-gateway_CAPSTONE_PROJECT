@@ -24,6 +24,16 @@ at most 15 steps, so gamma = 0.99 makes the terminal reward count almost in
 full at every step. Exploration anneals from 1.0 to 0.05 over the first
 30% of training. Not tuned beyond checking that training curves level off
 (L6b-6).
+
+**Best-checkpoint selection on validation** (added for the second run,
+after the first evaluation found 2 of 5 unshaped agents had collapsed):
+every VALIDATE_EVERY steps the current Q-network is played on
+VALIDATION_SESSIONS validation sessions - val prompts, session seeds far
+from anything training draws, shaping off - and the exported agent is the
+best checkpoint by validation return *among those that respect the
+go/no-go's safety limit* (benign lockout no more than the rule's + 1
+point, measured on the same sessions). If no checkpoint qualifies the last
+one is exported and flagged. Test sessions are never touched here.
 """
 
 import argparse
@@ -37,12 +47,19 @@ import numpy as np
 import torch
 from rl_env import SessionEnv
 from stable_baselines3 import DQN
+from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.utils import set_random_seed
 
-from app.core.defense.rl.dqn import save_weights
+from app.core.defense.rl.dqn import DQNPolicy, save_weights
+from app.core.defense.rl.fallback_policy import RuleBasedPolicy
+from app.core.defense.rl.simulator import run_episode
 
 OUTPUT_DIR = gs.REPO_ROOT / "training" / "checkpoints" / "rl_agent"
 SHAPING_COEF = 0.5
+VALIDATE_EVERY = 25_000
+VALIDATION_SESSIONS = 600
+VALIDATION_SEED_OFFSET = 20_000_000  # apart from evaluate_rl_agent.py's 10M
+LOCKOUT_SLACK = 0.01  # the go/no-go's safety limit
 
 HYPERPARAMETERS = dict(
     learning_rate=5e-4,
@@ -75,17 +92,54 @@ def export_q_network(model: DQN) -> list[tuple[np.ndarray, np.ndarray]]:
     return layers
 
 
+def validate(decide) -> dict[str, float]:
+    """Return and benign lockout rate on the validation sessions."""
+    sim = gs.simulator(gs.TRAIN_SPLIT, replace(gs.TRAIN, shaping_coef=0.0))
+    stats = [
+        run_episode(sim, decide, VALIDATION_SEED_OFFSET + i) for i in range(VALIDATION_SESSIONS)
+    ]
+    benign = [s for s in stats if s.label.value == "benign"]
+    return {
+        "return": float(np.mean([s.env_return for s in stats])),
+        "benign_lockout": sum(s.locked_out for s in benign) / max(len(benign), 1),
+    }
+
+
+class BestOnValidation(BaseCallback):
+    def __init__(self, lockout_limit: float):
+        super().__init__()
+        self.lockout_limit = lockout_limit
+        self.best: tuple[float, int, list] | None = None
+        self.history: list[dict] = []
+
+    def _on_step(self) -> bool:
+        if self.num_timesteps % VALIDATE_EVERY == 0:
+            layers = export_q_network(self.model)
+            result = validate(DQNPolicy(layers).decide)
+            admissible = result["benign_lockout"] <= self.lockout_limit
+            self.history.append({"step": self.num_timesteps, "admissible": admissible, **result})
+            if admissible and (self.best is None or result["return"] > self.best[0]):
+                self.best = (result["return"], self.num_timesteps, layers)
+        return True
+
+
 def train(seed: int, shaping: bool, timesteps: int) -> Path:
     set_random_seed(seed)
     config = replace(gs.TRAIN, shaping_coef=SHAPING_COEF if shaping else 0.0)
     env = SessionEnv(gs.simulator(gs.TRAIN_SPLIT, config, seed=seed))
     model = DQN("MlpPolicy", env, seed=seed, device="cpu", verbose=0, **HYPERPARAMETERS)
+    rule_lockout = validate(RuleBasedPolicy().decide)["benign_lockout"]
+    callback = BestOnValidation(rule_lockout + LOCKOUT_SLACK)
 
     started = time.time()
-    model.learn(total_timesteps=timesteps, progress_bar=False)
+    model.learn(total_timesteps=timesteps, progress_bar=False, callback=callback)
     name = f"dqn_{'shaping' if shaping else 'noshaping'}_seed{seed}"
     path = OUTPUT_DIR / f"{name}.npz"
-    save_weights(path, export_q_network(model))
+    if callback.best is not None:
+        _, best_step, layers = callback.best
+    else:
+        best_step, layers = None, export_q_network(model)
+    save_weights(path, layers)
 
     # Episode returns over training (env reward, shaping excluded), for
     # the learning-curve check.
@@ -99,18 +153,28 @@ def train(seed: int, shaping: bool, timesteps: int) -> Path:
                 "seconds": round(time.time() - started, 1),
                 "hyperparameters": {k: str(v) for k, v in HYPERPARAMETERS.items()},
                 "episode_returns": returns,
+                "validation": callback.history,
+                "rule_validation_lockout": rule_lockout,
+                # None = no checkpoint met the lockout limit; the final one
+                # was exported.
+                "selected_step": best_step,
             }
         )
     )
-    print(f"{name}: {time.time() - started:.0f}s, {len(returns)} episodes")
+    print(
+        f"{name}: {time.time() - started:.0f}s, {len(returns)} episodes, "
+        f"selected step {best_step}"
+    )
     return path
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2, 3, 4])
-    parser.add_argument("--timesteps", type=int, default=150_000)
-    parser.add_argument("--shaping", choices=["on", "off", "both"], default="both")
+    parser.add_argument("--timesteps", type=int, default=300_000)
+    # Shaping on by default: the first run's ablation showed it is what
+    # keeps training stable (0/5 collapses vs 2/5 without).
+    parser.add_argument("--shaping", choices=["on", "off", "both"], default="on")
     args = parser.parse_args()
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     for shaping in {"on": [True], "off": [False], "both": [True, False]}[args.shaping]:

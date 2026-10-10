@@ -35,10 +35,12 @@ training seeds, on every held-out preset,
   2. its benign lockout rate is no more than the rule's + 1 point.
 Otherwise the rule-based fallback stays the default (SESSION_POLICY=rule).
 
-If a variant is GO, --ship copies one of its seeds' weights to
-gateway/app/core/defense/rl/dqn_policy.npz. The seed is chosen on
-*validation* sessions (val prompts, seeds never used in training), not on
-the test results.
+--ship copies one agent's weights to
+gateway/app/core/defense/rl/dqn_policy.npz and writes the verdict next to
+it (dqn_policy.json), which SESSION_POLICY=auto reads: GO -> the gateway
+runs the DQN, anything else -> the rule-based fallback. The agent is chosen
+on *validation* sessions (val prompts, seeds never used in training), not
+on the test results.
 
 Result of the 2026-10-10 run: NO-GO (training/README.md). The shipped
 dqn_policy.npz was copied by hand: shaping seed 0, chosen on validation
@@ -51,6 +53,7 @@ import json
 import math
 import shutil
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 
 import generate_sessions as gs
@@ -197,9 +200,13 @@ def main() -> None:
         print(f"- dqn_{variant}: {r['seeds_passing']}/{r['seeds']} seeds meet the criterion "
               f"on every preset (need {SEEDS_REQUIRED})")
 
-    if go_variants:
-        # Pick a seed on validation sessions (val prompts, unseen seeds).
-        candidates = [f for v in go_variants for f in variants[v] if per_seed_ok[v][f.stem]]
+    # Pick the agent to ship on validation sessions (val prompts, unseen
+    # seeds), never on the test results: among GO variants' seeds that met
+    # the criterion; on NO-GO, among any seed that met it individually
+    # (shipped as an opt-in, with a NO-GO verdict so "auto" ignores it).
+    pool = go_variants or list(variants)
+    candidates = [f for v in pool for f in variants[v] if per_seed_ok[v][f.stem]]
+    if candidates:
         val_config = replace(gs.TRAIN, shaping_coef=0.0)
         scores = {
             f.stem: metrics(play(gs.TRAIN_SPLIT, val_config, DQNPolicy.load(f), N_VALIDATION,
@@ -211,7 +218,23 @@ def main() -> None:
         print(f"- chosen on validation sessions: {chosen} ({scores[chosen]:.3f})")
         if args.ship:
             shutil.copyfile(AGENT_DIR / f"{chosen}.npz", DEFAULT_WEIGHTS_PATH)
-            print(f"- shipped to {DEFAULT_WEIGHTS_PATH.relative_to(gs.REPO_ROOT)}")
+            verdict = {
+                "decision": decision,
+                "agent": chosen,
+                "evaluated": date.today().isoformat(),
+                "criterion": (
+                    f">= {SEEDS_REQUIRED}/5 seeds beat maintain and rule (95% CI > 0) on every "
+                    f"held-out preset, benign lockout <= rule + {LOCKOUT_SLACK:.2f}"
+                ),
+                "go_no_go": results["go_no_go"],
+            }
+            DEFAULT_WEIGHTS_PATH.with_suffix(".json").write_text(
+                json.dumps(verdict, indent=2) + "\n"
+            )
+            print(f"- shipped to {DEFAULT_WEIGHTS_PATH.relative_to(gs.REPO_ROOT)} "
+                  f"with verdict {decision}")
+    elif args.ship:
+        print("- no seed met the criterion; nothing shipped (the previous files stay)")
 
     print("\n## Learning curves (mean episode return, first vs last 10% of training)")
     for stem, c in results["learning_curves"].items():

@@ -12,9 +12,16 @@ ablated) on its own:
    | benign               | -0.5                                        | +1.0             |
    | attack               | +1.5                                        | -2.0             |
 
-   One addition: an attack session in which an attack request was
-   *allowed* (a breach) gets -2.0 whatever the agent did. Intervening and
-   still letting the attack through is not a success.
+   Two additions:
+   - an attack session in which an attack request was *allowed* (a
+     breach) gets -2.0 whatever the agent did. Intervening and still
+     letting the attack through is not a success;
+   - a benign session the agent *locked out* gets WRONGFUL_LOCKOUT_REWARD
+     = -2.0 instead of -0.5: as bad as a breach. A session is a whole API
+     key (L6b-1), so a wrongful lockout refuses every user of an
+     application. Under the plan's -0.5, the first evaluation (2026-10-10)
+     found 3 of 5 trained agents earned their higher reward partly by
+     locking out 2-5x more benign sessions than the rule (L6b-5, L6b-10).
 
 2. Request reward, every step: what module 6a's outcome on the session's
    next request earned under 6a's own table (app/core/defense/reward.py),
@@ -48,12 +55,17 @@ TERMINAL_REWARD: dict[tuple[ThreatLabel, bool], float] = {
     (ThreatLabel.ATTACK, False): -2.0,
 }
 BREACH_REWARD = -2.0
+WRONGFUL_LOCKOUT_REWARD = -2.0
 REQUEST_REWARD_WEIGHT = 0.2
 
 
-def terminal_reward(label: ThreatLabel, intervened: bool, breached: bool = False) -> float:
+def terminal_reward(
+    label: ThreatLabel, intervened: bool, breached: bool = False, locked_out: bool = False
+) -> float:
     if label == ThreatLabel.ATTACK and breached:
         return BREACH_REWARD
+    if label == ThreatLabel.BENIGN and locked_out:
+        return WRONGFUL_LOCKOUT_REWARD
     return TERMINAL_REWARD[(ThreatLabel(label), bool(intervened))]
 
 

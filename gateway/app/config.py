@@ -96,11 +96,13 @@ class Settings(BaseSettings):
     # one. The gateway can't see application users, so a shared key is one
     # session for all of them (LIMITATIONS.md L6b-1).
     SESSION_IDLE_SECONDS: int = Field(default=1800, ge=60)
-    # Which session policy runs: "rule" (the rule-based fallback), "dqn"
-    # (the trained agent) or "maintain" (session state is still tracked
-    # and logged, but the bias is never changed). Switching needs no code
-    # change - see rl/policy.py.
-    SESSION_POLICY: Literal["rule", "dqn", "maintain"] = "rule"
+    # Which session policy runs: "auto" (the trained DQN if the shipped
+    # agent passed the go/no-go evaluation, the rule-based fallback
+    # otherwise), "rule" (always the fallback), "dqn" (always the trained
+    # agent) or "maintain" (session state is still tracked and logged, but
+    # the bias is never changed). Switching needs no code change - see
+    # rl/policy.py.
+    SESSION_POLICY: Literal["auto", "rule", "dqn", "maintain"] = "auto"
     # The policy runs after every Nth request of a session, or after any
     # request arriving this many seconds after its last run.
     SESSION_POLICY_EVERY_N: int = Field(default=1, ge=1)
@@ -108,8 +110,9 @@ class Settings(BaseSettings):
     # How long a `lockout` refuses the API key's requests. An admin can
     # lift it earlier (POST /v1/admin/sessions/unlock/{api_key_id}).
     SESSION_LOCK_SECONDS: int = Field(default=900, ge=1)
-    # Exported DQN weights (.npz). Empty = the file shipped with the
-    # gateway, app/core/defense/rl/dqn_policy.npz.
+    # Exported DQN weights (.npz), with its go/no-go verdict alongside
+    # (same name, .json) for "auto". Empty = the files shipped with the
+    # gateway, app/core/defense/rl/dqn_policy.npz / .json.
     SESSION_DQN_WEIGHTS: str = ""
 
 

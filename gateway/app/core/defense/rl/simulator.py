@@ -351,7 +351,9 @@ class SessionSimulator:
 
         after = self.snapshot()
         if self._done:
-            reward += terminal_reward(self.stats.label, self.stats.intervened, self.stats.breached)
+            reward += terminal_reward(
+                self.stats.label, self.stats.intervened, self.stats.breached, self.stats.locked_out
+            )
         self.stats.env_return += reward
         reward += shaping(
             potential(before),
