@@ -4,6 +4,9 @@ prompt_injection / jailbreak). See project_plan/05-threat-detection-classifier.m
 Run from the repo root with the project venv, after prepare_dataset.py:
     gateway/.venv/Scripts/python.exe training/train_classifier.py
 
+v2 (data expansion, see training/README.md):
+    gateway/.venv/Scripts/python.exe training/train_classifier.py --data-dir training/data/v2 --output-dir training/checkpoints/v2
+
 Saves the best checkpoint (by validation macro-F1) to
 training/checkpoints/final/, ready for app/core/threat/classifier.py to load.
 
@@ -13,6 +16,7 @@ short max sequence length (these are prompts, not documents). Falls back to
 CPU automatically if no CUDA device is available - just slower.
 """
 
+import argparse
 import json
 import logging
 from pathlib import Path
@@ -36,7 +40,6 @@ logger = logging.getLogger("train_classifier")
 MODEL_NAME = "microsoft/deberta-v3-base"
 DATA_DIR = Path(__file__).resolve().parent / "data"
 OUTPUT_DIR = Path(__file__).resolve().parent / "checkpoints"
-FINAL_DIR = OUTPUT_DIR / "final"
 MAX_LENGTH = 160
 LABEL_NAMES = ["benign", "prompt_injection", "jailbreak"]
 
@@ -91,6 +94,13 @@ class WeightedLossTrainer(Trainer):
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data-dir", type=Path, default=DATA_DIR)
+    parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR)
+    cli = parser.parse_args()
+    data_dir, output_dir = cli.data_dir, cli.output_dir
+    final_dir = output_dir / "final"
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info("training on device: %s", device)
 
@@ -99,8 +109,8 @@ def main() -> None:
     def tokenize(batch):
         return tokenizer(batch["text"], truncation=True, max_length=MAX_LENGTH)
 
-    train_ds = load_jsonl(DATA_DIR / "train.jsonl").map(tokenize, batched=True)
-    val_ds = load_jsonl(DATA_DIR / "val.jsonl").map(tokenize, batched=True)
+    train_ds = load_jsonl(data_dir / "train.jsonl").map(tokenize, batched=True)
+    val_ds = load_jsonl(data_dir / "val.jsonl").map(tokenize, batched=True)
 
     # dtype=torch.float32 is load-bearing, not cosmetic. transformers 5.x's
     # from_pretrained defaults to the checkpoint's *stored* dtype, and
@@ -131,7 +141,7 @@ def main() -> None:
     warmup_steps = max(1, int(steps_per_epoch * num_train_epochs * 0.1))
 
     args = TrainingArguments(
-        output_dir=str(OUTPUT_DIR / "run"),
+        output_dir=str(output_dir / "run"),
         per_device_train_batch_size=per_device_train_batch_size,
         per_device_eval_batch_size=8,
         gradient_accumulation_steps=gradient_accumulation_steps,
@@ -170,14 +180,14 @@ def main() -> None:
 
     trainer.train()
 
-    FINAL_DIR.mkdir(parents=True, exist_ok=True)
-    trainer.save_model(str(FINAL_DIR))
-    tokenizer.save_pretrained(str(FINAL_DIR))
-    logger.info("saved best checkpoint to %s", FINAL_DIR)
+    final_dir.mkdir(parents=True, exist_ok=True)
+    trainer.save_model(str(final_dir))
+    tokenizer.save_pretrained(str(final_dir))
+    logger.info("saved best checkpoint to %s", final_dir)
 
     val_metrics = trainer.evaluate()
     logger.info("final validation metrics: %s", json.dumps(val_metrics, indent=2))
-    (OUTPUT_DIR / "val_metrics.json").write_text(json.dumps(val_metrics, indent=2))
+    (output_dir / "val_metrics.json").write_text(json.dumps(val_metrics, indent=2))
 
 
 if __name__ == "__main__":

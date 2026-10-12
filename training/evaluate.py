@@ -4,10 +4,14 @@ precision/recall/F1 per class. See project_plan/05-threat-detection-classifier.m
 Run from the repo root with the project venv, after train_classifier.py:
     gateway/.venv/Scripts/python.exe training/evaluate.py
 
+Any checkpoint on any test file (used for the v1 vs v2 comparison):
+    gateway/.venv/Scripts/python.exe training/evaluate.py --checkpoint training/checkpoints/v2/final --test-file training/data/v2/test.jsonl --output training/checkpoints/v2/test_new_metrics.json
+
 Writes training/checkpoints/test_metrics.json and prints a report - these
 numbers go into the module's README (project requirement, not optional).
 """
 
+import argparse
 import json
 import logging
 from pathlib import Path
@@ -35,14 +39,20 @@ def load_jsonl(path: Path) -> Dataset:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--checkpoint", type=Path, default=CHECKPOINT_DIR)
+    parser.add_argument("--test-file", type=Path, default=DATA_DIR / "test.jsonl")
+    parser.add_argument("--output", type=Path, default=OUTPUT_PATH)
+    cli = parser.parse_args()
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    tokenizer = AutoTokenizer.from_pretrained(CHECKPOINT_DIR)
+    tokenizer = AutoTokenizer.from_pretrained(cli.checkpoint)
     model = AutoModelForSequenceClassification.from_pretrained(
-        CHECKPOINT_DIR, dtype=torch.float32
+        cli.checkpoint, dtype=torch.float32
     ).to(device)
     model.eval()
 
-    test_ds = load_jsonl(DATA_DIR / "test.jsonl")
+    test_ds = load_jsonl(cli.test_file)
 
     all_preds, all_labels = [], []
     batch_size = 16
@@ -74,13 +84,19 @@ def main() -> None:
     )
     cm = confusion_matrix(all_labels, all_preds, labels=list(range(len(LABEL_NAMES))))
 
+    benign_row = cm[0]
     result = {
+        "checkpoint": str(cli.checkpoint),
+        "test_file": str(cli.test_file),
+        # Share of benign prompts predicted as an attack (argmax not benign).
+        "benign_false_positive_rate": float(1 - benign_row[0] / max(1, benign_row.sum())),
         "report": report,
         "confusion_matrix": cm.tolist(),
         "label_order": LABEL_NAMES,
         "test_set_size": len(all_labels),
     }
-    OUTPUT_PATH.write_text(json.dumps(result, indent=2))
+    cli.output.parent.mkdir(parents=True, exist_ok=True)
+    cli.output.write_text(json.dumps(result, indent=2))
 
     logger.info("test set size: %d", len(all_labels))
     logger.info(
@@ -94,7 +110,8 @@ def main() -> None:
         ),
     )
     logger.info("confusion matrix (rows=true, cols=pred), order %s:\n%s", LABEL_NAMES, cm)
-    logger.info("wrote %s", OUTPUT_PATH)
+    logger.info("benign false-positive rate: %.4f", result["benign_false_positive_rate"])
+    logger.info("wrote %s", cli.output)
 
 
 if __name__ == "__main__":

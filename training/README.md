@@ -641,3 +641,83 @@ On the test presets this agent:
 - beats both baselines everywhere;
 - has fewer breaches than the rule (standard 0.099 mean across seeds);
 - locks out fewer benign sessions than the rule.
+
+# Data expansion (v2): plan and pre-registered criteria
+
+Written on 2026-10-12, **before** any v2 model was trained and before any model
+was scored on the new test set. The results sections below are added
+afterwards; the criteria in this section are not changed after the fact.
+
+Why: three measured weaknesses trace back to too little data. Injection F1 is
+0.86 on only 29 test examples, from ~200 training rows (L5-1). Ordinary
+imperative phrasing is flagged (L5-2). The scores are bimodal, so the bandit
+can only tie a static threshold (L6a-1) and the session agent's bias acts on
+~1% of traffic (L6b-2). The session agent's NO-GO came down to statistical
+power: the RL test pool has only ~4 blind-spot attacks, and re-running on the
+same test sessions would turn them into a tuning set (L6b-10).
+
+## Data (`training/prepare_dataset_v2.py` → `training/data/v2/`)
+
+| Source | Licence | Used as | Notes |
+|---|---|---|---|
+| v1 data (deepset, jackhhao, alpaca) | as v1 | v1 train → train, v1 val → val | v1 test kept unchanged as the **old test** (194) |
+| neuralchemy/Prompt-injection-dataset (core) | Apache-2.0 | injection, jailbreak, benign | incl. HackAPrompt submissions (capped at 800) and WildGuard jailbreaks; HarmBench rows dropped (harmful requests, not injections); `control` category dropped (harmless leetspeak labelled malicious) |
+| TrustAIRLab/in-the-wild-jailbreak-prompts | MIT | jailbreak; "regular" prompts as hard benign | regular: English only, capped at 1,500 |
+| leolee99/NotInject | MIT | hard benign | benign prompts full of trigger words (over-defence benchmark); English subsets only |
+| databricks/databricks-dolly-15k | CC-BY-SA-3.0 | benign | instructions only, capped at 1,500 |
+
+Not used: SPML (its injection label means "off-topic for the chatbot"; e.g.
+asking for movie recommendations is labelled an attack, which would make L5-2
+worse), xTRam1/safe-guard-prompt-injection and rubend18/ChatGPT-Jailbreak-Prompts
+(no licence given), Lakera/mosscap_prompt_injection (unlabelled; its card says
+many rows aren't injections).
+
+Cleaning: 10-10,000 characters; exact dedupe on normalised text within the new
+data and against all of v1; texts seen with conflicting labels dropped. Leakage:
+old and new rows are clustered together with v1's near-duplicate union-find
+(word 8-grams, overlap ≥ 0.5). New rows in a cluster touching v1 val/test are
+dropped (62), new rows near v1 train rows go to train only (45), at most 3 new
+rows are kept per cluster (369 dropped, mostly DAN and "I have been PWNED"
+templates), and the remaining clusters are split whole, 75/10/15. An
+independent re-check found no cluster spanning train, val, new test and old test.
+
+| Split | Rows | benign | injection | jailbreak |
+|---|---|---|---|---|
+| train (v1 + new) | 6,307 (v1: 1,523) | 3,521 | 1,661 (v1: 203) | 1,125 |
+| val (v1 + new) | 830 (v1: 196) | 463 | 226 | 141 |
+| **new test, locked** | 950 | 546 | 292 | 112 |
+| old test (v1) | 194 | 100 | 29 | 65 |
+
+The new test file's SHA-256 is recorded in `training/data/v2/stats.json`
+(`21ce7fa0…4e77`), so any later change to it is detectable.
+
+## Pre-registered criteria
+
+**Classifier v2** (`train_classifier.py --data-dir training/data/v2`, same
+settings as v1: DeBERTa-v3-base, fp32, batch 4×4, lr 2e-5, max length 160,
+sqrt-inverse-frequency class weights, best epoch by validation macro-F1).
+Scored with `evaluate.py` (first 160 tokens, argmax), each model once per test
+set, after training has finished. v2 replaces v1 only if **all** hold:
+
+1. New test: v2's prompt_injection F1 > v1's.
+2. New test: v2's benign false-positive rate (benign predicted as an attack)
+   ≤ v1's.
+3. Old test: v2's macro-F1 ≥ 0.913 (v1's 0.933 − 0.02), and benign
+   false-positive rate ≤ 0.02 (v1: 0.01).
+
+Otherwise v1 stays in the gateway and the new data is still used for the
+bandit and session-agent evaluations. A temperature for score calibration is
+fitted on v2 validation data only; it doesn't change argmax predictions, so it
+isn't part of the criteria. Calibration error is reported before and after.
+
+**Session agent v3** (module 6b). Prompt pools are re-scored with the chosen
+classifier: RL train/validation prompts = v1 val + new val, RL test prompts =
+old test + new test. Changes: attack-session rate drawn per episode block from
+5-50%, and a majority-vote ensemble of 5 DQNs. Run 2's fixes are kept
+(wrongful lockout −2.0, lockout guard ≥ 2 refusals, shaping on, validation
+checkpoint selection). Evaluation uses 20,000 paired sessions per preset on the
+RL test prompts. The DQN ships with a GO verdict (so `SESSION_POLICY=auto` runs
+it) only if 3 independently trained ensembles **all** beat both maintain-only
+and the rule-based policy on every preset (paired 95% CI of the return
+difference > 0) **and** each keeps benign-session lockout ≤ the rule's + 1
+percentage point. Otherwise the verdict stays NO-GO and `auto` keeps the rule.
