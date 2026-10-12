@@ -8,7 +8,9 @@ so tests can inject a cheap fake instead of loading the real checkpoint
 (torch + a ~500MB DeBERTa checkpoint has no business running inside unit
 tests - see gateway/tests/test_threat_stage.py).
 """
+import json
 import logging
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,6 +40,29 @@ INFERENCE_BATCH_SIZE = 8
 # scanned; ScanResult.truncated reports it so the decision layer (module 6)
 # can treat an oversized prompt as suspicious instead of silently trusting it.
 MAX_WINDOWS = 32
+# Written next to the checkpoint by training/calibrate.py (temperature
+# scaling, fitted on validation data). No file means temperature 1.0, i.e.
+# the model's raw probabilities.
+CALIBRATION_FILE = "calibration.json"
+
+
+def load_temperature(checkpoint_dir: Path) -> float:
+    """The checkpoint's fitted softmax temperature, or 1.0 if it has none.
+
+    A present but unusable file raises instead of falling back to 1.0: the
+    temperature shifts every score the defence acts on, so a corrupt value
+    should stop startup loudly rather than silently change decisions.
+    """
+    path = Path(checkpoint_dir) / CALIBRATION_FILE
+    if not path.exists():
+        return 1.0
+    try:
+        temperature = float(json.loads(path.read_text(encoding="utf-8"))["temperature"])
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ValueError(f"unreadable {path}: {type(exc).__name__}") from None
+    if not math.isfinite(temperature) or not 0.05 <= temperature <= 100.0:
+        raise ValueError(f"{path}: temperature {temperature} outside [0.05, 100]")
+    return temperature
 
 
 @dataclass
@@ -113,7 +138,13 @@ class ThreatClassifier:
         self._model.to(self._device)
         self._model.eval()
         self._torch = torch
-        logger.info("ThreatClassifier loaded from %s onto %s", resolved_dir, self._device)
+        self._temperature = load_temperature(resolved_dir)
+        logger.info(
+            "ThreatClassifier loaded from %s onto %s (temperature %s)",
+            resolved_dir,
+            self._device,
+            self._temperature,
+        )
 
     def score(self, text: str) -> ThreatScore:
         return self.score_texts([text]).score
@@ -135,7 +166,7 @@ class ThreatClassifier:
                     input_ids=self._torch.tensor(input_ids, device=self._device),
                     attention_mask=self._torch.tensor(attention, device=self._device),
                 ).logits
-                out.extend(self._torch.softmax(logits, dim=-1).tolist())
+                out.extend(self._torch.softmax(logits / self._temperature, dim=-1).tolist())
         return out
 
     def score_texts(self, texts: list[str]) -> "ScanResult":

@@ -12,8 +12,9 @@ Which policy runs is the SESSION_POLICY setting:
   fail-open. Nothing is decided from live traffic - there are no live
   labels to judge an agent by.
 - "rule": the rule-based fallback, always.
-- "dqn": the trained agent, always. Missing or broken weights then fail the
-  request closed, like any stage error: the operator asked for the DQN.
+- "dqn": the trained agent (one network or a voting ensemble), always.
+  Missing or broken weights then fail the request closed, like any stage
+  error: the operator asked for the DQN.
 - "maintain": track and log the session, never change anything.
 
 All of them implement `decide(snapshot) -> SessionAction`, so swapping them
@@ -42,7 +43,7 @@ from pathlib import Path
 from typing import Protocol
 
 from app.config import settings
-from app.core.defense.rl.dqn import DEFAULT_WEIGHTS_PATH, DQNPolicy
+from app.core.defense.rl.dqn import DEFAULT_WEIGHTS_PATH, load_dqn
 from app.core.defense.rl.fallback_policy import MaintainPolicy, RuleBasedPolicy
 from app.core.defense.rl.features import SessionSnapshot
 from app.db.models import SessionAction
@@ -78,7 +79,7 @@ def _auto(weights_path: Path) -> SessionPolicy:
         logger.info("session policy auto: DQN verdict %r, using the rule-based fallback", verdict)
         return RuleBasedPolicy()
     try:
-        policy = DQNPolicy.load(weights_path)
+        policy = load_dqn(weights_path)
     except Exception as exc:  # noqa: BLE001 - any load failure means "use the rule"
         logger.warning(
             "session policy auto: DQN weights failed to load (%s), using the rule-based fallback",
@@ -99,7 +100,7 @@ def _load(name: str, weights_path: str) -> SessionPolicy:
     if name == "maintain":
         return MaintainPolicy()
     if name == "dqn":
-        return DQNPolicy.load(path)
+        return load_dqn(path)
     raise ValueError(f"unknown session policy {name!r}")
 
 

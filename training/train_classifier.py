@@ -5,7 +5,8 @@ Run from the repo root with the project venv, after prepare_dataset.py:
     gateway/.venv/Scripts/python.exe training/train_classifier.py
 
 v2 (data expansion, see training/README.md):
-    gateway/.venv/Scripts/python.exe training/train_classifier.py --data-dir training/data/v2 --output-dir training/checkpoints/v2
+    gateway/.venv/Scripts/python.exe training/train_classifier.py
+        --data-dir training/data/v2 --output-dir training/checkpoints/v2
 
 Saves the best checkpoint (by validation macro-F1) to
 training/checkpoints/final/, ready for app/core/threat/classifier.py to load.

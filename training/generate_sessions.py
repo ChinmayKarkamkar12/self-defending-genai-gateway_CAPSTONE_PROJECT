@@ -54,6 +54,17 @@ DATA_DIR = REPO_ROOT / "training" / "data"
 TRAIN_SPLIT = "val"
 EVAL_SPLIT = "test"
 
+# Prompt pools by run. v1: module 5's val/test splits (runs 1 and 2). v3:
+# the data expansion's larger pools (training/score_pools_v3.py) - train =
+# v1 val + new val, test = v1 test + the new locked test.
+POOLS = {"v1": ("val", "test"), "v3": ("rl3_train", "rl3_test")}
+
+
+def use_pools(version: str) -> None:
+    """Point every simulator built from here on at one run's prompt pools."""
+    global TRAIN_SPLIT, EVAL_SPLIT
+    TRAIN_SPLIT, EVAL_SPLIT = POOLS[version]
+
 # What the agent trains on: 20% of sessions are attacks; benign users
 # include the false-positive-prone ones.
 #
@@ -98,8 +109,8 @@ def load_pools(split: str) -> tuple[list[ScoredPrompt], list[ScoredPrompt]]:
     cache = DATA_DIR / f"bandit_scores_{split}.jsonl"
     if not cache.exists():
         raise SystemExit(
-            f"{cache} is missing - run training/evaluate_bandit.py once to score the "
-            "held-out splits with the production classifier"
+            f"{cache} is missing - run training/evaluate_bandit.py (v1 pools) or "
+            "training/score_pools_v3.py (v3 pools) to score them with the production classifier"
         )
     prompts = [
         ScoredPrompt(**json.loads(line))

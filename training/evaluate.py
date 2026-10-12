@@ -5,7 +5,9 @@ Run from the repo root with the project venv, after train_classifier.py:
     gateway/.venv/Scripts/python.exe training/evaluate.py
 
 Any checkpoint on any test file (used for the v1 vs v2 comparison):
-    gateway/.venv/Scripts/python.exe training/evaluate.py --checkpoint training/checkpoints/v2/final --test-file training/data/v2/test.jsonl --output training/checkpoints/v2/test_new_metrics.json
+    gateway/.venv/Scripts/python.exe training/evaluate.py
+        --checkpoint training/checkpoints/v2/final --test-file training/data/v2/test.jsonl
+        --output training/checkpoints/v2/test_new_metrics.json
 
 Writes training/checkpoints/test_metrics.json and prints a report - these
 numbers go into the module's README (project requirement, not optional).
@@ -16,7 +18,9 @@ import json
 import logging
 from pathlib import Path
 
+import numpy as np
 import torch
+from calibrate import attack_ece
 from datasets import Dataset
 from sklearn.metrics import classification_report, confusion_matrix
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
@@ -54,7 +58,7 @@ def main() -> None:
 
     test_ds = load_jsonl(cli.test_file)
 
-    all_preds, all_labels = [], []
+    all_preds, all_labels, all_logits = [], [], []
     batch_size = 16
     texts = test_ds["text"]
     labels = test_ds["label"]
@@ -70,6 +74,7 @@ def main() -> None:
                 padding=True,
             ).to(device)
             logits = model(**inputs).logits
+            all_logits.append(logits.float().cpu().numpy())
             preds = torch.argmax(logits, dim=-1).cpu().tolist()
             all_preds.extend(preds)
             all_labels.extend(labels[i : i + batch_size])
@@ -84,8 +89,22 @@ def main() -> None:
     )
     cm = confusion_matrix(all_labels, all_preds, labels=list(range(len(LABEL_NAMES))))
 
+    # Calibration error of the attack score, raw and with the checkpoint's
+    # fitted temperature (calibrate.py) if it has one.
+    logits_np, labels_np = np.concatenate(all_logits), np.array(all_labels)
+    calibration_file = cli.checkpoint / "calibration.json"
+    temperature = (
+        json.loads(calibration_file.read_text())["temperature"]
+        if calibration_file.exists()
+        else None
+    )
+    ece = {"raw": attack_ece(logits_np, labels_np, 1.0)}
+    if temperature is not None:
+        ece[f"temperature_{temperature}"] = attack_ece(logits_np, labels_np, temperature)
+
     benign_row = cm[0]
     result = {
+        "attack_score_ece": ece,
         "checkpoint": str(cli.checkpoint),
         "test_file": str(cli.test_file),
         # Share of benign prompts predicted as an attack (argmax not benign).
@@ -110,6 +129,7 @@ def main() -> None:
         ),
     )
     logger.info("confusion matrix (rows=true, cols=pred), order %s:\n%s", LABEL_NAMES, cm)
+    logger.info("attack-score calibration error (ECE): %s", ece)
     logger.info("benign false-positive rate: %.4f", result["benign_false_positive_rate"])
     logger.info("wrote %s", cli.output)
 

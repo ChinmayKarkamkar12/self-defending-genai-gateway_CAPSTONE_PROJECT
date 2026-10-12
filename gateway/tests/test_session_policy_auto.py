@@ -9,7 +9,13 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.core.defense.rl.actions import ACTION_ORDER
-from app.core.defense.rl.dqn import DEFAULT_WEIGHTS_PATH, DQNPolicy, save_weights
+from app.core.defense.rl.dqn import (
+    DEFAULT_WEIGHTS_PATH,
+    DQNEnsemble,
+    DQNPolicy,
+    save_ensemble,
+    save_weights,
+)
 from app.core.defense.rl.fallback_policy import RuleBasedPolicy
 from app.core.defense.rl.features import N_SESSION_FEATURES
 from app.core.defense.rl.policy import (
@@ -100,3 +106,13 @@ async def test_auto_records_which_policy_decided(client, db_session, monkeypatch
         ("dqn", SessionAction.TIGHTEN),
         ("rule", SessionAction.MAINTAIN),
     ]
+
+
+def test_auto_runs_a_voting_ensemble_on_a_go_verdict(tmp_path, monkeypatch):
+    path = tmp_path / "ensemble.npz"
+    w = np.zeros((len(ACTION_ORDER), N_SESSION_FEATURES))
+    b = np.zeros(len(ACTION_ORDER))
+    b[ACTION_ORDER.index(SessionAction.TIGHTEN)] = 1.0
+    save_ensemble(path, [[(w, b)]] * 3)
+    verdict_path(path).write_text(json.dumps({"decision": "GO"}))
+    assert isinstance(auto(monkeypatch, str(path)), DQNEnsemble)

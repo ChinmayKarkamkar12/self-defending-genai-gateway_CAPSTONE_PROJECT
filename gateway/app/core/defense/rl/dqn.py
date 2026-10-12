@@ -13,7 +13,12 @@ numpy forward pass:
 The file records the feature layout and action order it was trained with;
 loading refuses a mismatch instead of feeding the network the wrong
 inputs (a wrong policy that looks fine).
+
+A file can also hold an ensemble: several independently trained networks
+that vote (DQNEnsemble; added for the third training run, after single
+agents proved to vary too much between seeds). `load_dqn` reads either kind.
 """
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -28,6 +33,7 @@ from app.core.defense.rl.features import (
 from app.db.models import SessionAction
 
 DEFAULT_WEIGHTS_PATH = Path(__file__).with_name("dqn_policy.npz")
+MAX_MEMBERS = 15
 
 
 class DQNPolicy:
@@ -51,19 +57,10 @@ class DQNPolicy:
 
     @classmethod
     def load(cls, path: str | Path = DEFAULT_WEIGHTS_PATH) -> "DQNPolicy":
-        with np.load(Path(path), allow_pickle=False) as data:
-            if int(data["feature_version"]) != SESSION_FEATURE_VERSION:
-                raise ValueError("DQN weights were trained on a different feature version")
-            if tuple(str(n) for n in data["feature_names"]) != SESSION_FEATURE_NAMES:
-                raise ValueError("DQN weights were trained on a different feature layout")
-            if tuple(str(a) for a in data["actions"]) != tuple(a.value for a in ACTION_ORDER):
-                raise ValueError("DQN weights were trained with a different action order")
-            n_layers = int(data["n_layers"])
-            layers = [
-                (np.asarray(data[f"W{i}"], dtype=float), np.asarray(data[f"b{i}"], dtype=float))
-                for i in range(n_layers)
-            ]
-        return cls(layers)
+        policy = load_dqn(path)
+        if not isinstance(policy, cls):
+            raise ValueError("file holds an ensemble; use load_dqn")
+        return policy
 
     def q_values(self, x: np.ndarray) -> np.ndarray:
         h = np.asarray(x, dtype=float)
@@ -78,14 +75,78 @@ class DQNPolicy:
         return ACTION_ORDER[int(np.argmax(q))]
 
 
-def save_weights(path: str | Path, layers: list[tuple[np.ndarray, np.ndarray]]) -> None:
-    arrays: dict[str, np.ndarray] = {
+class DQNEnsemble:
+    """Independently trained Q-networks that vote: each member picks its
+    greedy action, and the most picked action wins. A tie goes to the tied
+    action with the highest Q-value summed over all members, so the result
+    is deterministic. One badly trained member can't decide on its own."""
+
+    name = "dqn"
+
+    def __init__(self, members: list[DQNPolicy]):
+        if not 1 <= len(members) <= MAX_MEMBERS:
+            raise ValueError(f"an ensemble needs 1-{MAX_MEMBERS} members")
+        self.members = members
+
+    def decide(self, snapshot: SessionSnapshot) -> SessionAction:
+        x = build_session_features(snapshot)
+        q = np.stack([m.q_values(x) for m in self.members])
+        votes = Counter(int(np.argmax(row)) for row in q)
+        top = max(votes.values())
+        tied = [a for a, n in votes.items() if n == top]
+        q_sum = q.sum(axis=0)
+        return ACTION_ORDER[max(tied, key=lambda a: q_sum[a])]
+
+
+def _header() -> dict[str, np.ndarray]:
+    return {
         "feature_version": np.array(SESSION_FEATURE_VERSION),
         "feature_names": np.array(SESSION_FEATURE_NAMES),
         "actions": np.array([a.value for a in ACTION_ORDER]),
-        "n_layers": np.array(len(layers)),
     }
+
+
+def _layer_arrays(prefix: str, layers: list[tuple[np.ndarray, np.ndarray]]) -> dict:
+    arrays = {f"{prefix}n_layers": np.array(len(layers))}
     for i, (weight, bias) in enumerate(layers):
-        arrays[f"W{i}"] = np.asarray(weight, dtype=np.float32)
-        arrays[f"b{i}"] = np.asarray(bias, dtype=np.float32)
+        arrays[f"{prefix}W{i}"] = np.asarray(weight, dtype=np.float32)
+        arrays[f"{prefix}b{i}"] = np.asarray(bias, dtype=np.float32)
+    return arrays
+
+
+def save_weights(path: str | Path, layers: list[tuple[np.ndarray, np.ndarray]]) -> None:
+    np.savez(Path(path), **_header(), **_layer_arrays("", layers))
+
+
+def save_ensemble(path: str | Path, members: list[list[tuple[np.ndarray, np.ndarray]]]) -> None:
+    arrays = {**_header(), "n_members": np.array(len(members))}
+    for k, layers in enumerate(members):
+        arrays.update(_layer_arrays(f"m{k}_", layers))
     np.savez(Path(path), **arrays)
+
+
+def load_dqn(path: str | Path = DEFAULT_WEIGHTS_PATH) -> DQNPolicy | DQNEnsemble:
+    """A single network or an ensemble, whichever the file holds."""
+    with np.load(Path(path), allow_pickle=False) as data:
+        if int(data["feature_version"]) != SESSION_FEATURE_VERSION:
+            raise ValueError("DQN weights were trained on a different feature version")
+        if tuple(str(n) for n in data["feature_names"]) != SESSION_FEATURE_NAMES:
+            raise ValueError("DQN weights were trained on a different feature layout")
+        if tuple(str(a) for a in data["actions"]) != tuple(a.value for a in ACTION_ORDER):
+            raise ValueError("DQN weights were trained with a different action order")
+
+        def layers(prefix: str) -> list[tuple[np.ndarray, np.ndarray]]:
+            return [
+                (
+                    np.asarray(data[f"{prefix}W{i}"], dtype=float),
+                    np.asarray(data[f"{prefix}b{i}"], dtype=float),
+                )
+                for i in range(int(data[f"{prefix}n_layers"]))
+            ]
+
+        if "n_members" not in data.files:
+            return DQNPolicy(layers(""))
+        n_members = int(data["n_members"])
+        if not 1 <= n_members <= MAX_MEMBERS:
+            raise ValueError(f"an ensemble needs 1-{MAX_MEMBERS} members")
+        return DQNEnsemble([DQNPolicy(layers(f"m{k}_")) for k in range(n_members)])

@@ -34,6 +34,16 @@ best checkpoint by validation return *among those that respect the
 go/no-go's safety limit* (benign lockout no more than the rule's + 1
 point, measured on the same sessions). If no checkpoint qualifies the last
 one is exported and flagged. Test sessions are never touched here.
+
+**Third run (data expansion, `--pools v3 --mixed-rate`):** the larger v3
+prompt pools, and an attack-session rate redrawn every RATE_BLOCK episodes
+from 5-50% (rl_env.SessionEnv). Validation then averages the return over
+attack rates of 5%, 20% and 50% (VALIDATION_RATES), so a checkpoint isn't
+picked for one prior only. Agents for the 3 ensembles are seeds 0-14
+(evaluate_rl_ensembles.py groups them):
+
+    gateway/.venv/Scripts/python.exe training/train_rl_agent.py --pools v3 --mixed-rate \
+        --seeds 0 1 2 3 4 --output-dir training/checkpoints/rl_agent_v3
 """
 
 import argparse
@@ -60,6 +70,9 @@ VALIDATE_EVERY = 25_000
 VALIDATION_SESSIONS = 600
 VALIDATION_SEED_OFFSET = 20_000_000  # apart from evaluate_rl_agent.py's 10M
 LOCKOUT_SLACK = 0.01  # the go/no-go's safety limit
+MIXED_RATE_RANGE = (0.05, 0.5)
+RATE_BLOCK = 50
+VALIDATION_RATES = (0.05, 0.2, 0.5)
 
 HYPERPARAMETERS = dict(
     learning_rate=5e-4,
@@ -92,12 +105,19 @@ def export_q_network(model: DQN) -> list[tuple[np.ndarray, np.ndarray]]:
     return layers
 
 
-def validate(decide) -> dict[str, float]:
-    """Return and benign lockout rate on the validation sessions."""
-    sim = gs.simulator(gs.TRAIN_SPLIT, replace(gs.TRAIN, shaping_coef=0.0))
-    stats = [
-        run_episode(sim, decide, VALIDATION_SEED_OFFSET + i) for i in range(VALIDATION_SESSIONS)
-    ]
+def validate(decide, rates: tuple[float, ...] | None = None) -> dict[str, float]:
+    """Return and benign lockout rate on the validation sessions. With
+    `rates`, the sessions are split evenly across those attack-session rates
+    (the return is then the mean over rates)."""
+    configs = [replace(gs.TRAIN, shaping_coef=0.0)]
+    if rates:
+        configs = [replace(c, attack_session_rate=r) for c in configs for r in rates]
+    per_config = VALIDATION_SESSIONS // len(configs)
+    stats = []
+    for k, config in enumerate(configs):
+        sim = gs.simulator(gs.TRAIN_SPLIT, config)
+        offset = VALIDATION_SEED_OFFSET + k * per_config
+        stats += [run_episode(sim, decide, offset + i) for i in range(per_config)]
     benign = [s for s in stats if s.label.value == "benign"]
     return {
         "return": float(np.mean([s.env_return for s in stats])),
@@ -106,16 +126,17 @@ def validate(decide) -> dict[str, float]:
 
 
 class BestOnValidation(BaseCallback):
-    def __init__(self, lockout_limit: float):
+    def __init__(self, lockout_limit: float, rates: tuple[float, ...] | None = None):
         super().__init__()
         self.lockout_limit = lockout_limit
+        self.rates = rates
         self.best: tuple[float, int, list] | None = None
         self.history: list[dict] = []
 
     def _on_step(self) -> bool:
         if self.num_timesteps % VALIDATE_EVERY == 0:
             layers = export_q_network(self.model)
-            result = validate(DQNPolicy(layers).decide)
+            result = validate(DQNPolicy(layers).decide, self.rates)
             admissible = result["benign_lockout"] <= self.lockout_limit
             self.history.append({"step": self.num_timesteps, "admissible": admissible, **result})
             if admissible and (self.best is None or result["return"] > self.best[0]):
@@ -123,18 +144,23 @@ class BestOnValidation(BaseCallback):
         return True
 
 
-def train(seed: int, shaping: bool, timesteps: int) -> Path:
+def train(seed: int, shaping: bool, timesteps: int, output_dir: Path, mixed: bool) -> Path:
     set_random_seed(seed)
     config = replace(gs.TRAIN, shaping_coef=SHAPING_COEF if shaping else 0.0)
-    env = SessionEnv(gs.simulator(gs.TRAIN_SPLIT, config, seed=seed))
+    env = SessionEnv(
+        gs.simulator(gs.TRAIN_SPLIT, config, seed=seed),
+        rate_range=MIXED_RATE_RANGE if mixed else None,
+        rate_block=RATE_BLOCK,
+    )
     model = DQN("MlpPolicy", env, seed=seed, device="cpu", verbose=0, **HYPERPARAMETERS)
-    rule_lockout = validate(RuleBasedPolicy().decide)["benign_lockout"]
-    callback = BestOnValidation(rule_lockout + LOCKOUT_SLACK)
+    rates = VALIDATION_RATES if mixed else None
+    rule_lockout = validate(RuleBasedPolicy().decide, rates)["benign_lockout"]
+    callback = BestOnValidation(rule_lockout + LOCKOUT_SLACK, rates)
 
     started = time.time()
     model.learn(total_timesteps=timesteps, progress_bar=False, callback=callback)
     name = f"dqn_{'shaping' if shaping else 'noshaping'}_seed{seed}"
-    path = OUTPUT_DIR / f"{name}.npz"
+    path = output_dir / f"{name}.npz"
     if callback.best is not None:
         _, best_step, layers = callback.best
     else:
@@ -144,12 +170,16 @@ def train(seed: int, shaping: bool, timesteps: int) -> Path:
     # Episode returns over training (env reward, shaping excluded), for
     # the learning-curve check.
     returns = env.episode_returns
-    (OUTPUT_DIR / f"{name}.json").write_text(
+    (output_dir / f"{name}.json").write_text(
         json.dumps(
             {
                 "seed": seed,
                 "shaping": shaping,
                 "timesteps": timesteps,
+                "pools": [gs.TRAIN_SPLIT, gs.EVAL_SPLIT],
+                "mixed_rate": list(MIXED_RATE_RANGE) if mixed else None,
+                "rate_block": RATE_BLOCK if mixed else None,
+                "validation_rates": list(rates) if rates else None,
                 "seconds": round(time.time() - started, 1),
                 "hyperparameters": {k: str(v) for k, v in HYPERPARAMETERS.items()},
                 "episode_returns": returns,
@@ -175,11 +205,15 @@ def main() -> None:
     # Shaping on by default: the first run's ablation showed it is what
     # keeps training stable (0/5 collapses vs 2/5 without).
     parser.add_argument("--shaping", choices=["on", "off", "both"], default="on")
+    parser.add_argument("--pools", choices=sorted(gs.POOLS), default="v1")
+    parser.add_argument("--mixed-rate", action="store_true")
+    parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR)
     args = parser.parse_args()
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    gs.use_pools(args.pools)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
     for shaping in {"on": [True], "off": [False], "both": [True, False]}[args.shaping]:
         for seed in args.seeds:
-            train(seed, shaping, args.timesteps)
+            train(seed, shaping, args.timesteps, args.output_dir, args.mixed_rate)
 
 
 if __name__ == "__main__":
