@@ -248,7 +248,12 @@
   - Limitations L6b-1 to L6b-10 added to `LIMITATIONS.md`; L6a-9 resolved; L6a-26 is now Planned under module 10 (see L6b-7).
 
 ## In progress
-(none yet)
+- **Data expansion (classifier v2/v3, then 6a re-check and RL v3)**, started 2026-10-12. State on 2026-10-13:
+  - Classifier v2 trained; it fails pre-registered criterion 3 (old-test macro-F1 0.884 < 0.913) even though it is far better on the new locked test (macro 0.908 vs v1 0.490). So v1 stays for now. Full table in training/README.md, "Classifier v2 result".
+  - Classifier v3 (start from v1's weights, v1 rows x2, lr 1e-5, 2 epochs, epoch chosen on validation) is pre-registered in training/README.md under the same criteria.
+  - A v3 run is training as a detached Windows process (PID 26560, log `training/checkpoints/v3/train_log.txt`). Check it before starting anything on the GPU.
+  - Two earlier v3 attempts were killed by Claude Code's low-memory guard while writing the optimizer state; that's why `--save-only-model` was added.
+  - The RL v3 prompt pools are scored with v1 (`training/data/bandit_scores_rl3_*`). Re-score them if v3 is adopted.
 
 ## Not started
 - [ ] Module 7: Audit logging
