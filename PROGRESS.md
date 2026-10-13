@@ -272,7 +272,7 @@
     - `auto` resolved to `rule`, and the ensemble loads in the container.
     - Stack stopped.
   - **LIMITATIONS:** L5-1 resolved; L5-2 mitigated; L5-8 and L6a-30 added; L6a-1 and L6b-10 updated.
-  - Not pushed yet.
+  - **Pushed to `origin/main` on 2026-10-13** (commits `7c026df`..`7c648c9`, authored by Chinmay, no Claude co-author trailer). GitHub Actions run on `7c648c9`: **success** (https://github.com/ChinmayKarkamkar12/self-defending-genai-gateway_CAPSTONE_PROJECT/actions/runs/38387060798).
 
 ## In progress
 (none)
@@ -286,7 +286,7 @@
 
 ## Notes for next session
 - **`LIMITATIONS.md` is the living register of known limitations.** Add entries when a module ships with one; when something in an entry's "Unblocked by" column becomes available, revisit it; mark fixed ones `Resolved` (don't delete them).
-- **Next up: Module 7 (audit logging).** The data expansion is done (see above). The DQN has been NO-GO three times, so `SESSION_POLICY=auto` (the default) runs the rule-based fallback. For module 7: `session_policy_events` holds every session-agent run (policy, proposed/actual action, bias before/after, numeric features), and `threat_events.session_id` / `forced_escalation` link 6a decisions to sessions. Pending from the data expansion: push to origin and record CI; possibly a pre-registered re-fit of 6a band edges to v2 scores (L6a-30).
+- **Next up: Module 7 (audit logging).** The data expansion is done (see above). The DQN has been NO-GO three times, so `SESSION_POLICY=auto` (the default) runs the rule-based fallback. For module 7: `session_policy_events` holds every session-agent run (policy, proposed/actual action, bias before/after, numeric features), and `threat_events.session_id` / `forced_escalation` link 6a decisions to sessions. Pending from the data expansion (pushed, CI green): possibly a pre-registered re-fit of 6a band edges to v2 scores (L6a-30).
 - Docker stack: run `docker compose up -d --build` (never plain `up -d` after changing code or requirements - if the build fails, plain `up` silently runs the old image), then `docker compose exec gateway alembic upgrade head` and `docker compose exec gateway python -m scripts.seed` (must be `-m`; `python scripts/seed.py` fails with `No module named 'app'`). The gateway won't start unless `training/checkpoints/final/` exists on the host.
 - The trained checkpoint lives only on this machine at `training/checkpoints/final/` (gitignored, ~700 MB; since 2026-10-13 this is classifier v2 plus `calibration.json`; v1 is at `training/checkpoints/v1/final/`). Rebuilding v2 from a fresh clone: `training/prepare_dataset_v2.py`, then `train_classifier.py --data-dir training/data/v2 --output-dir training/checkpoints/v2`, then `calibrate.py`. A fresh clone must re-run `training/prepare_dataset.py` + `training/train_classifier.py` (~40-45 min on the RTX 3050) before the gateway can start, since the lifespan hook loads it at startup. The Docker image doesn't include it yet — mounting it / setting `THREAT_MODEL_DIR` is module 10's job.
 - Training on the 4 GB RTX 3050 nearly fills VRAM, and later epochs slow down ~20x (3 it/s -> ~6 s/it) as memory spills to shared RAM. It still completes; reduce batch size or `MAX_LENGTH` if a future run needs to be faster.
