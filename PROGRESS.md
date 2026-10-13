@@ -325,6 +325,7 @@
     - Clean shutdown with 9/9 entries stored; after a restart, entry 10 chained onto entry 9's hash.
     - Observation, added to L5-2: a bare "hello" scored 0.72 injection, after the rule-based session agent had tightened the session (bias 0 -> 0.25 -> 0.5) following a real injection.
   - **LIMITATIONS:** L7-1 to L7-8 and L2-2 added; L5-2 and L2-1 updated. README has an audit-log section and the durable-queue scaling note the plan asks for.
+  - **Pushed to `origin/main` on 2026-10-13** (commits `7afe229` + `156ac3b`, authored by Chinmay, no Claude co-author trailer). GitHub Actions run on `156ac3b`: **success** (https://github.com/ChinmayKarkamkar12/self-defending-genai-gateway_CAPSTONE_PROJECT/actions/runs/38438212856). The 6 real-Postgres tests are skipped in CI (no `TEST_POSTGRES_DSN`); they were run locally (349/349).
 
 ## In progress
 (none)
@@ -337,7 +338,7 @@
 
 ## Notes for next session
 - **TODO tomorrow - module 7 open issues (noted 2026-10-13, in this order):**
-  1. **Push not done yet.** `7afe229` (module 7) and this note's commit are local only. Ask Chinmay, then push, wait for GitHub CI (curl the Actions API, `gh` isn't installed) and record "pushed + CI result" in the module 7 entry as a separate commit.
+  1. ~~Push~~ - done 2026-10-13, CI green (see the module 7 entry).
   2. **L2-2 - the gateway's real throughput limit (needs Chinmay's approval, it's a module 2 change).** `app/core/providers/openai.py:15` and `anthropic.py:56` create a new `httpx.AsyncClient` per upstream call; each one loads the CA bundle (~300 ms, blocking the event loop), so the gateway handles ~3 req/s. Fix: one long-lived client per provider, opened/closed in `main.py`'s lifespan. Then re-measure: 20 concurrent requests on Postgres were ~7.4 s each, and 100 concurrent requests through the real adapter exhausted the DB pool. After the fix, the stub in `test_no_log_entries_lost_under_load*` could go back to respx.
   3. **L5-2 data point:** a bare "hello" scored 0.72 injection in the live gateway (the session had been tightened). Check whether it reproduces in a fresh session with the real classifier (`training/evaluate.py` or a direct `ThreatClassifier.score`). If it does, add it to the hard-negative list for any future classifier work; no retraining planned now.
   4. **Learning session pending:** Chinmay hasn't answered the 3 module 7 quiz questions yet: (a) why editing entry #5 breaks #6; (b) what protects the log from a superuser who disables the trigger; (c) why one serialized writer. Go over them, plus a quick run of `docker compose exec gateway python -m scripts.tamper_demo --postgres` as demo practice.
