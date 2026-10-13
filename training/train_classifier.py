@@ -139,6 +139,10 @@ def main() -> None:
     parser.add_argument("--learning-rate", type=float, default=2e-5)
     parser.add_argument("--epochs", type=int, default=4)
     parser.add_argument("--v1-floor", type=float, default=None)
+    # Save only model weights each epoch (no ~1.5 GB optimizer state): writing
+    # the optimizer state spiked RAM enough to get the run killed on the
+    # laptop. A run saved this way can't be resumed with --resume-from.
+    parser.add_argument("--save-only-model", action="store_true")
     cli = parser.parse_args()
     data_dir, output_dir = cli.data_dir, cli.output_dir
     final_dir = output_dir / "final"
@@ -210,6 +214,7 @@ def main() -> None:
         eval_strategy="epoch",
         save_strategy="epoch",
         save_total_limit=2,
+        save_only_model=cli.save_only_model,
         load_best_model_at_end=True,
         metric_for_best_model="select" if cli.v1_floor is not None else "macro_f1",
         greater_is_better=True,
