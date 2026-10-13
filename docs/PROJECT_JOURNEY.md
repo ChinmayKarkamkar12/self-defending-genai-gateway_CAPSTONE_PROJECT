@@ -272,8 +272,22 @@ If any stage crashes, the request is **blocked** (fail-closed, ADR-0001).
 - **RL v3 passes only if:** 3 independent 5-agent voting ensembles all beat both
   baselines on every scenario with 20,000 sessions each, within the lockout
   limit. Then `auto` would switch to the DQN by itself.
-- **Status:** a power cut stopped the first v2 training run on 2026-10-12; it was
-  restarted on 2026-10-13. Results will be added here.
+- **v2 result (2026-10-13): failed, v1 stays.** v2 was far better on the new
+  test (macro-F1 0.908 vs v1's 0.490; v1 flagged 27% of benign prompts and
+  missed 77% of injections there). But it slipped on the old test (macro-F1
+  0.884, below the 0.913 floor). Two of the three criteria passed; the rule
+  needs all three, so v1 stayed. The real lesson: **v1's original 0.933 did
+  not generalise**; it was measured on a small, narrow test set.
+- **v3 attempt (pre-registered after seeing v2, and disclosed as a second
+  look):** aimed at v2's one failure, which was forgetting the v1-style data.
+  Changes: start from v1's weights, show v1 rows twice, a lower learning rate,
+  2 epochs, and the epoch chosen on validation only. Same three criteria,
+  unchanged. A small script (`training/apply_classifier_criteria.py`) applies
+  the criteria mechanically; it was committed before v3 had any results.
+- **Engineering hiccups:** a power cut killed the first v2 run. Two v3 runs
+  were then killed by a low-memory guard while writing a 1.5 GB optimizer
+  checkpoint. Fix: `--save-only-model` (save the weights only), and run the
+  training as a detached process.
 
 ---
 
@@ -328,3 +342,5 @@ If any stage crashes, the request is **blocked** (fail-closed, ADR-0001).
 
 - 2026-10-13: first version, written from the records for modules 1-6b and the
   start of the data expansion.
+- 2026-10-13 (later): data expansion section updated with the v2 result and the
+  v3 attempt.
