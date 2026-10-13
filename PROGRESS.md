@@ -336,6 +336,24 @@
 - [ ] Module 11: Build roadmap (reference only, not implemented)
 
 ## Notes for next session
+- **TODO tomorrow - module 7 open issues (noted 2026-10-13, in this order):**
+  1. **Push not done yet.** `7afe229` (module 7) and this note's commit are local only. Ask Chinmay, then push, wait for GitHub CI (curl the Actions API, `gh` isn't installed) and record "pushed + CI result" in the module 7 entry as a separate commit.
+  2. **L2-2 - the gateway's real throughput limit (needs Chinmay's approval, it's a module 2 change).** `app/core/providers/openai.py:15` and `anthropic.py:56` create a new `httpx.AsyncClient` per upstream call; each one loads the CA bundle (~300 ms, blocking the event loop), so the gateway handles ~3 req/s. Fix: one long-lived client per provider, opened/closed in `main.py`'s lifespan. Then re-measure: 20 concurrent requests on Postgres were ~7.4 s each, and 100 concurrent requests through the real adapter exhausted the DB pool. After the fix, the stub in `test_no_log_entries_lost_under_load*` could go back to respx.
+  3. **L5-2 data point:** a bare "hello" scored 0.72 injection in the live gateway (the session had been tightened). Check whether it reproduces in a fresh session with the real classifier (`training/evaluate.py` or a direct `ThreatClassifier.score`). If it does, add it to the hard-negative list for any future classifier work; no retraining planned now.
+  4. **Learning session pending:** Chinmay hasn't answered the 3 module 7 quiz questions yet: (a) why editing entry #5 breaks #6; (b) what protects the log from a superuser who disables the trigger; (c) why one serialized writer. Go over them, plus a quick run of `docker compose exec gateway python -m scripts.tamper_demo --postgres` as demo practice.
+  5. **Open module 7 limitations (accepted, no action needed tomorrow, see LIMITATIONS.md):**
+     - L7-1: a crash loses queued entries.
+     - L7-2: tail deletion is undetectable without an outside copy of `head_hash`.
+     - L7-3: single writer (~940 entries/s).
+     - L7-4: no retention.
+     - L7-5: 401s not audited.
+     - L7-6: the gateway runs as a Postgres superuser (module 10).
+     - L7-7: no admin auth (module 8).
+     - L7-8: CSV export capped at 100k rows, built in memory.
+  6. **Housekeeping:**
+     - The Docker stack was left running (`docker compose stop` to stop it).
+     - The live `gateway` DB now holds 10 real audit entries that can never be deleted (trigger). That's fine for dev; use a fresh DB for demo seeding (module 10).
+     - `ruff format` isn't enforced in this repo, so the new files match the existing style, not the formatter.
 - **`LIMITATIONS.md` is the living register of known limitations.** Add entries when a module ships with one; when something in an entry's "Unblocked by" column becomes available, revisit it; mark fixed ones `Resolved` (don't delete them).
 - **Next up: Module 8 (admin dashboard).** Module 7 is done (see above). The dashboard's log viewer uses `GET /v1/admin/logs` (cursor pagination: pass `next_before_sequence` back as `before_sequence`; filters `team_id`, `from`, `to`, `action`, `outcome`), `GET /v1/admin/logs/verify` (returns `valid`, `first_broken_entry`, `first_broken_sequence`, `reason`, `entry_count`, `head_hash` - a superset of the plan's `{valid, first_broken_entry}`) and `GET /v1/admin/logs/export?format=csv`. Admin auth (L3-1, L6a-4, L7-7) is module 8's job. Before module 8, consider approving the small L2-2 fix (one shared httpx client per provider): it is the gateway's real throughput limit. Audit entries can never be deleted (trigger), so module 10 should seed demo data into a fresh database. Live demo: `docker compose exec gateway python -m scripts.tamper_demo --postgres`. Chinmay wants short learning sessions alongside: explain what was built and quiz him.
 - Docker stack: run `docker compose up -d --build` (never plain `up -d` after changing code or requirements - if the build fails, plain `up` silently runs the old image), then `docker compose exec gateway alembic upgrade head` and `docker compose exec gateway python -m scripts.seed` (must be `-m`; `python scripts/seed.py` fails with `No module named 'app'`). The gateway won't start unless `training/checkpoints/final/` exists on the host.
