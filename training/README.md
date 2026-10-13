@@ -721,3 +721,56 @@ it) only if 3 independently trained ensembles **all** beat both maintain-only
 and the rule-based policy on every preset (paired 95% CI of the return
 difference > 0) **and** each keeps benign-session lockout ≤ the rule's + 1
 percentage point. Otherwise the verdict stays NO-GO and `auto` keeps the rule.
+
+## Classifier v2 result (2026-10-13): fails criterion 3, v1 stays
+
+Trained once (the first attempt was cut off by a power failure before any
+checkpoint and restarted from scratch; the restart was interrupted once more
+by a low-memory kill and resumed from its epoch-2 checkpoint with
+`--resume-from`, which restores optimizer, scheduler and RNG state). Best
+epoch 4, validation macro-F1 0.920. Temperature fitted on v2 validation:
+**T = 2.24** (validation NLL 0.379 → 0.228, attack-score ECE 0.042 → 0.019).
+
+Each model scored once per test set:
+
+| | v1 | v2 |
+|---|---|---|
+| **New test (950)** macro-F1 | 0.490 | **0.908** |
+| prompt_injection F1 | 0.341 | **0.949** |
+| jailbreak F1 | 0.335 | **0.805** |
+| benign false-positive rate | 0.275 | **0.031** |
+| attack-score ECE (v2 with T) | 0.204 | 0.017 |
+| **Old test (194)** macro-F1 | **0.933** | 0.884 |
+| prompt_injection F1 | **0.857** (24/29) | 0.769 (20/29) |
+| jailbreak F1 | **0.976** | 0.944 |
+| benign false-positive rate | 0.010 | 0.010 |
+
+Criteria: (1) new-test injection F1 higher ✅; (2) new-test benign FP rate
+not higher ✅; (3) old-test macro-F1 ≥ 0.913 ❌ (0.884; FP rate 0.010 ✅).
+**Result: v2 does not replace v1.**
+
+What it shows: v1's held-out numbers did not generalise. On the larger and
+more varied new test it misses 77% of injections and flags 27% of benign
+prompts. v2 generalises far better but lost a little on the old benchmark,
+where v1-origin rows are only 24% of its training data (1,523 / 6,307).
+
+## Classifier v3: second attempt, pre-registered before training (2026-10-13)
+
+Designed **after** seeing v2's test results, aimed at v2's one measured
+failure (forgetting v1-origin data). Disclosed here: this is the second look
+at both test sets.
+
+Changes from v2 (`train_classifier.py --init-from training/checkpoints/final
+--oversample-v1 2 --learning-rate 1e-5 --epochs 2 --v1-floor 0.947`):
+- start from v1's fine-tuned weights instead of the base model;
+- v1-origin training rows appear twice;
+- learning rate 1e-5, 2 epochs;
+- best epoch chosen on **validation only**: highest macro-F1 on the 634
+  new-origin validation rows among epochs whose macro-F1 on the 196
+  v1-origin validation rows is ≥ 0.947 (v1's 0.957 there, minus 0.01). On
+  validation, v2 scored 0.937 / 0.893 on these two parts, v1 0.957 / 0.496.
+
+Fitted temperature on v2 validation as before. v3 is scored once per test
+set and replaces v1 only if it passes the **same three criteria, unchanged**
+(compared against v1). If it fails, v1 stays, and any later decision to ship
+v2 or v3 anyway is recorded separately as an override, with its reasons.
