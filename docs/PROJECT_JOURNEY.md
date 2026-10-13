@@ -253,7 +253,7 @@ If any stage crashes, the request is **blocked** (fail-closed, ADR-0001).
   reliably enough to be the default; the reward and the data are the
   bottleneck, not the algorithm.*
 
-### Data expansion (v2) — in progress since 2026-10-12
+### Data expansion (v2) — 2026-10-12 to 2026-10-13
 
 - **Why:** the three weak results above all trace back to too little data:
   injection F1 measured on only 29 examples, false positives on ordinary
@@ -288,6 +288,29 @@ If any stage crashes, the request is **blocked** (fail-closed, ADR-0001).
   were then killed by a low-memory guard while writing a 1.5 GB optimizer
   checkpoint. Fix: `--save-only-model` (save the weights only), and run the
   training as a detached process.
+- **v3 result: failed as well**, and worse than v2 on both tests (old-test
+  macro-F1 0.871, new 0.877). Per the rules, v1 would stay.
+- **Override (a team decision, recorded as one):** we shipped v2 anyway.
+  The rule was protecting a 194-row benchmark on which v2 misses 6 more
+  attacks than v1. On the 950-row locked test, v1 flags 27.5% of benign
+  prompts. Across both tests v2 misses 28 of 498 attacks (v1: 63) and flags
+  18 of 646 benign prompts (v1: 151). The README says plainly that this is
+  an override, not a pass.
+- **6a re-check:** still a tie on normal data. New: with realistic feedback
+  the bandit now trails a tuned threshold at low attack rates. Calibrated
+  scores fall in the prior's middle bands, which v1's all-or-nothing scores
+  never reached (L6a-30). Diagnosed on validation only.
+- **RL v3: NO-GO for the third time.** 3 ensembles × 5 DQNs, 20,000 sessions
+  per scenario. They beat the rule on 3 of 4 scenarios (breaches 8.3% vs
+  11.7%), but lock out 3.1–3.5% of benign sessions against a 2.2% limit.
+  Cause found: checkpoint selection measured lockout on only 600 sessions,
+  so it picked checkpoints that looked safe by luck (the winner's curse).
+  `auto` keeps the rule.
+- **Lessons:** (1) a bigger test can show that an earlier "good" number
+  didn't generalise (v1: 0.933 → 0.490); (2) better-calibrated inputs can
+  expose assumptions downstream that were silently tuned to the old model;
+  (3) a safety constraint needs as much statistical power as the objective
+  it constrains.
 
 ---
 
@@ -325,13 +348,17 @@ If any stage crashes, the request is **blocked** (fail-closed, ADR-0001).
 - **Why does the bandit only tie a threshold?** The classifier's scores are
   bimodal; a missed attack scores ~0, and no policy on the score can catch it.
   The bandit's value shows under drift.
-- **What would you improve?** More and better data (now in progress), score
-  calibration, admin auth (module 8), real session logs to replace the
+- **Why did you ship a classifier that failed your own criterion?** It failed
+  one of three: a 194-row old benchmark, by 6 attacks. On a 5× larger locked
+  test the old model flags 27.5% of benign prompts. We recorded it as an
+  override with reasons rather than quietly changing the rule.
+- **What would you improve?** Re-fit the bandit's bands to calibrated
+  scores, a larger validation set for the RL lockout constraint, admin auth (module 8), real session logs to replace the
   simulator (L6b-3).
 
 ## 7. What's next
 
-1. Finish the data expansion: classifier v2 decision, re-check 6a, RL v3.
+1. (Optional) Pre-registered re-fit of 6a's band edges to v2's scores (L6a-30).
 2. Module 7: audit logging (tamper-evident).
 3. Module 8: admin dashboard (Next.js) and admin authentication.
 4. Module 9: testing strategy; Module 10: deployment.
@@ -344,3 +371,4 @@ If any stage crashes, the request is **blocked** (fail-closed, ADR-0001).
   start of the data expansion.
 - 2026-10-13 (later): data expansion section updated with the v2 result and the
   v3 attempt.
+- 2026-10-13 (end of day): v3 result, v2 override, 6a re-check, RL v3 NO-GO.

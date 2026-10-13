@@ -1,13 +1,11 @@
 {
   "decision": "NO-GO",
-  "agent": "dqn_shaping_seed0",
-  "evaluated": "2026-10-10",
-  "criterion": ">= 4/5 seeds beat maintain and rule (95% CI > 0) on every held-out preset, benign lockout <= rule + 0.01",
-  "go_no_go": {
-    "shaping": {
-      "seeds_passing": 3,
-      "seeds": 5,
-      "go": false
-    }
+  "agent": "ensemble0: dqn_shaping_seed0, dqn_shaping_seed1, dqn_shaping_seed2, dqn_shaping_seed3, dqn_shaping_seed4 (majority vote)",
+  "evaluated": "2026-10-13",
+  "criterion": "all 3 ensembles beat maintain and rule (95% CI > 0) on every held-out preset (20000 sessions each, v3 test prompts), benign lockout <= rule + 0.01",
+  "passed": {
+    "ensemble0": false,
+    "ensemble1": false,
+    "ensemble2": false
   }
 }

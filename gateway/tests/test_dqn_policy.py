@@ -94,7 +94,9 @@ def test_loading_never_unpickles(tmp_path):
 
 @pytest.mark.skipif(not DEFAULT_WEIGHTS_PATH.exists(), reason="no trained weights shipped")
 def test_shipped_weights_load():
-    policy = DQNPolicy.load()
+    # Through the gateway's loader: the shipped file may be one network or
+    # a voting ensemble (run 3 ships an ensemble).
+    policy = load_dqn()
     assert policy.decide(SessionSnapshot(request_count=1)) in ACTION_ORDER
 
 

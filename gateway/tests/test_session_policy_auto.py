@@ -13,6 +13,7 @@ from app.core.defense.rl.dqn import (
     DEFAULT_WEIGHTS_PATH,
     DQNEnsemble,
     DQNPolicy,
+    load_dqn,
     save_ensemble,
     save_weights,
 )
@@ -83,7 +84,7 @@ def test_shipped_files_agree():
     verdict = read_verdict(DEFAULT_WEIGHTS_PATH)
     assert verdict in ("GO", "NO-GO")
     if DEFAULT_WEIGHTS_PATH.exists():
-        DQNPolicy.load(DEFAULT_WEIGHTS_PATH)
+        load_dqn(DEFAULT_WEIGHTS_PATH)
 
 
 async def test_auto_records_which_policy_decided(client, db_session, monkeypatch, tmp_path):

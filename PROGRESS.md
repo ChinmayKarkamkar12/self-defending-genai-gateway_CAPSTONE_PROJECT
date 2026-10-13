@@ -247,13 +247,35 @@
   - Tests: `conftest.py` now defaults `SESSION_POLICY` to `maintain`, so 6a's tests measure 6a alone. One 6a round-trip test otherwise saw the rule tighten its session. 6b's tests opt in.
   - Limitations L6b-1 to L6b-10 added to `LIMITATIONS.md`; L6a-9 resolved; L6a-26 is now Planned under module 10 (see L6b-7).
 
+- [x] **Data expansion (classifier v2, 6a re-check, RL v3).** Started 2026-10-12, completed 2026-10-13. Built on `main` directly. Full write-up in training/README.md, from "Data expansion (v2)" through "Session agent v3 result".
+  - **Data:** train 1,523 -> 6,307 rows; new locked test of 950 rows (SHA `21ce7fa0...`), cluster-aware splits, licence-checked sources.
+  - **Classifier:** v2 and v3 both FAILED pre-registered criterion 3 (old-test macro-F1 0.884 / 0.871 < 0.913).
+    - The team chose to **ship v2 as a recorded override** (training/README.md, "Override").
+    - On the new test, v2 vs v1: macro-F1 0.908 vs 0.490; benign FP rate 3.1% vs 27.5%.
+    - Across both tests: v2 misses 28/498 attacks (v1: 63) and flags 18/646 benign prompts (v1: 151).
+    - `training/checkpoints/final/` is now v2, with `calibration.json` (T = 2.24). v1 is kept at `training/checkpoints/v1/final/`, and v3 at `training/checkpoints/v3/final/`.
+    - The criteria were applied by `training/apply_classifier_criteria.py`, committed before v3's results existed.
+  - **6a re-check:** still a tie on i.i.d. data. With realistic feedback the bandit trails a tuned threshold at low attack rates on the new data (new L6a-30): calibrated scores land in the prior's middle bands. `evaluate_bandit.py --data v2` was added. Migration **0007** empties `bandit_state`.
+  - **RL v3:** 3 ensembles of 5 DQNs, 20,000 sessions per preset, result **NO-GO** (0/3).
+    - They beat the rule on standard (+0.06 to +0.08), attack-heavy (+0.30) and shifted, with breaches 8.3% vs 11.7%.
+    - They fail the lockout limit (3.1-3.5% vs 2.2%) and lose at low attack rates.
+    - Cause (diagnosed on validation): checkpoint selection estimated lockout on only 600 sessions (winner's curse).
+    - `auto` keeps the rule. Ensemble 0 is shipped with the NO-GO verdict (opt-in via `SESSION_POLICY=dqn`); run 2's agent is archived in `training/checkpoints/rl_run2_shipped_2026-10-10/`.
+  - **Tests:** 297 pass, ruff clean. Real-model test changes:
+    - the forward-pass comparison now applies the calibration temperature (a latent bug);
+    - the canonical injection is asserted as an attack, because v2 labels it jailbreak (L5-8);
+    - the shipped-agent tests use `load_dqn`, the gateway's own loader.
+  - **Live Docker (2026-10-13):**
+    - 0006 -> 0007 applied on real Postgres;
+    - the gateway loaded v2 with T 2.2415;
+    - benign requests reached the provider, the injection was blocked (422), and "Forget about the budget numbers..." was allowed;
+    - `auto` resolved to `rule`, and the ensemble loads in the container.
+    - Stack stopped.
+  - **LIMITATIONS:** L5-1 resolved; L5-2 mitigated; L5-8 and L6a-30 added; L6a-1 and L6b-10 updated.
+  - Not pushed yet.
+
 ## In progress
-- **Data expansion (classifier v2/v3, then 6a re-check and RL v3)**, started 2026-10-12. State on 2026-10-13:
-  - Classifier v2 trained; it fails pre-registered criterion 3 (old-test macro-F1 0.884 < 0.913) even though it is far better on the new locked test (macro 0.908 vs v1 0.490). So v1 stays for now. Full table in training/README.md, "Classifier v2 result".
-  - Classifier v3 (start from v1's weights, v1 rows x2, lr 1e-5, 2 epochs, epoch chosen on validation) is pre-registered in training/README.md under the same criteria.
-  - A v3 run is training as a detached Windows process (PID 26560, log `training/checkpoints/v3/train_log.txt`). Check it before starting anything on the GPU.
-  - Two earlier v3 attempts were killed by Claude Code's low-memory guard while writing the optimizer state; that's why `--save-only-model` was added.
-  - The RL v3 prompt pools are scored with v1 (`training/data/bandit_scores_rl3_*`). Re-score them if v3 is adopted.
+(none)
 
 ## Not started
 - [ ] Module 7: Audit logging
@@ -264,10 +286,9 @@
 
 ## Notes for next session
 - **`LIMITATIONS.md` is the living register of known limitations.** Add entries when a module ships with one; when something in an entry's "Unblocked by" column becomes available, revisit it; mark fixed ones `Resolved` (don't delete them).
-- **Planned for the next session (agreed 2026-10-10, before module 7): data expansion + classifier v2 + RL v3.** Steps: collect new public prompt datasets (licence-checked, near-duplicate-removed against the existing 1,913 rows); lock a fresh test split; retrain the classifier (kept only if it beats v1 on both test sets) with score calibration; re-score and re-check 6a; retrain 6b as a 5-agent voting ensemble with mixed attack rates, evaluated on the new locked test with 20,000 sessions. Pass criteria are fixed in advance: classifier v2 must beat v1; all 3 independent ensembles must beat maintain and rule with 95% CI on every preset and keep benign lockout <= rule + 1 pt, and if so `auto` switches to the DQN. Full phase-by-phase plan, candidate datasets and risks are in the Claude memory note `project_data_expansion_plan`. Confirm with the user before starting.
-- **Next up: Module 7 (audit logging).** 6b is done: the DQN is NO-GO twice (run 2: 3/5 seeds). `SESSION_POLICY=auto` (the default) therefore runs the rule-based fallback, and it would switch to the DQN by itself if a future evaluation ships a GO verdict. The DQN can be forced with `SESSION_POLICY=dqn`. For module 7: `session_policy_events` holds every session-agent run (policy, proposed/actual action, bias before/after, numeric features), and `threat_events.session_id` / `forced_escalation` link 6a decisions to sessions. 6b is pushed and CI is green.
+- **Next up: Module 7 (audit logging).** The data expansion is done (see above). The DQN has been NO-GO three times, so `SESSION_POLICY=auto` (the default) runs the rule-based fallback. For module 7: `session_policy_events` holds every session-agent run (policy, proposed/actual action, bias before/after, numeric features), and `threat_events.session_id` / `forced_escalation` link 6a decisions to sessions. Pending from the data expansion: push to origin and record CI; possibly a pre-registered re-fit of 6a band edges to v2 scores (L6a-30).
 - Docker stack: run `docker compose up -d --build` (never plain `up -d` after changing code or requirements - if the build fails, plain `up` silently runs the old image), then `docker compose exec gateway alembic upgrade head` and `docker compose exec gateway python -m scripts.seed` (must be `-m`; `python scripts/seed.py` fails with `No module named 'app'`). The gateway won't start unless `training/checkpoints/final/` exists on the host.
-- The trained checkpoint lives only on this machine at `training/checkpoints/final/` (gitignored, ~700 MB). A fresh clone must re-run `training/prepare_dataset.py` + `training/train_classifier.py` (~40-45 min on the RTX 3050) before the gateway can start, since the lifespan hook loads it at startup. The Docker image doesn't include it yet — mounting it / setting `THREAT_MODEL_DIR` is module 10's job.
+- The trained checkpoint lives only on this machine at `training/checkpoints/final/` (gitignored, ~700 MB; since 2026-10-13 this is classifier v2 plus `calibration.json`; v1 is at `training/checkpoints/v1/final/`). Rebuilding v2 from a fresh clone: `training/prepare_dataset_v2.py`, then `train_classifier.py --data-dir training/data/v2 --output-dir training/checkpoints/v2`, then `calibrate.py`. A fresh clone must re-run `training/prepare_dataset.py` + `training/train_classifier.py` (~40-45 min on the RTX 3050) before the gateway can start, since the lifespan hook loads it at startup. The Docker image doesn't include it yet — mounting it / setting `THREAT_MODEL_DIR` is module 10's job.
 - Training on the 4 GB RTX 3050 nearly fills VRAM, and later epochs slow down ~20x (3 it/s -> ~6 s/it) as memory spills to shared RAM. It still completes; reduce batch size or `MAX_LENGTH` if a future run needs to be faster.
 - Module 1 was committed and pushed directly to `main` (no feature branch/PR), which deviates from the CLAUDE.md convention of "one feature branch per module, PR per module." Starting with Module 2, work should go on a feature branch (e.g. `module-2-gateway-core-proxy`) with a PR, unless told otherwise.
 - Docker smoke test verified manually: built image, ran container, curled `/health` from host, got `{"status":"ok"}`, then tore down with `docker compose down`.

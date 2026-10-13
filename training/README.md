@@ -897,3 +897,61 @@ What it shows:
 - Not fixed in this pass: re-fitting the band edges to v2's scores would
   have to be done on validation and pre-registered before another look at
   the test set. Recorded as LIMITATIONS.md L6a-30.
+
+## Session agent v3 result (2026-10-13): NO-GO, `auto` keeps the rule
+
+Prompt pools scored with the shipped classifier (v2): RL train/validation
+pool 830 prompts (v1 val + new val), RL test pool 1,144 (old test + new
+locked test). 15 agents (`train_rl_agent.py --pools v3 --mixed-rate
+--output-dir training/checkpoints/rl_agent_v3 --seeds N`, 300k steps each,
+~5.6 min on CPU, run 5 at a time), grouped before any evaluation into
+ensembles of seeds 0-4, 5-9 and 10-14. `evaluate_rl_ensembles.py`, 20,000
+paired sessions per held-out preset; output `checkpoints/rl_eval_v3.json`
+(a second run with `--ship` reproduced it exactly).
+
+Return per session, and benign-session lockout (limit = rule + 1 point):
+
+| Preset | maintain | rule | ens. 0 | ens. 1 | ens. 2 | rule lockout | ensemble lockout |
+|---|---|---|---|---|---|---|---|
+| standard | 1.569 | 1.779 | 1.860 | 1.838 | 1.843 | 1.2% | 3.1-3.5% |
+| attack_heavy | 0.390 | 1.257 | 1.567 | 1.556 | 1.565 | 1.3% | 3.1-3.5% |
+| low_attack_rate | **2.153** | 2.040 | 1.999 | 1.974 | 1.977 | 1.2% | 3.1-3.5% |
+| shifted | **2.220** | 2.019 | 2.198 | 2.208 | 2.175 | 7.4% | 6.6-7.9% |
+
+Paired differences, 95% CI:
+- **Against the rule:** all three ensembles are better on standard (+0.06
+  to +0.08), attack_heavy (+0.30 to +0.31) and shifted (+0.16 to +0.19), and
+  worse on low_attack_rate (−0.04 to −0.07).
+- **Against maintain:** they are worse on low_attack_rate, and tie or are
+  worse on shifted.
+- **Breach rate:** the ensembles let about 8.3% of attack sessions through on
+  standard, against the rule's 11.7% and maintain's 16.7%.
+
+**Criterion: not met by any ensemble.** The lockout limit fails on standard,
+attack_heavy and low_attack_rate, and the low-rate and shifted presets fail
+on return. **Verdict NO-GO.** `SESSION_POLICY=auto` keeps the rule-based
+fallback.
+
+What was shipped: ensemble 0 (best validation return, 1.748 vs 1.719 /
+1.727) is in `dqn_policy.npz`, with the NO-GO verdict in `dqn_policy.json`.
+It replaces run 2's single agent because that agent was trained on v1's
+scores, which the gateway no longer produces. It runs only when forced with
+`SESSION_POLICY=dqn`. Run 2's files are archived in
+`checkpoints/rl_run2_shipped_2026-10-10/`.
+
+Why the lockout limit failed (diagnosed on validation sessions, after the
+test result):
+- The checkpoint-selection callback scores lockout on only 600 validation
+  sessions (~500 benign), so a 2-3% lockout rate is ~10-15 events.
+- Picking the best-return checkpoint among those under the limit favours
+  checkpoints whose lockout estimate came out low by chance. Members
+  reported 0.2-2.2% at selection.
+- On 3,000 fresh validation sessions the same members lock out 2.2-4.8% of
+  benign sessions (rule: 1.8%). Each ensemble sits near its members' average
+  (3.5-4.0%), so voting isn't the cause.
+
+What would address it (not attempted, since this test pool has now been used
+once): a validation set large enough to estimate lockout to ±0.3 points
+(≥ 5,000 sessions), or a lockout constraint in the reward or the selection
+with a safety margin. Per the pre-registration this is the last look at
+these test sessions.
