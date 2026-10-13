@@ -42,7 +42,12 @@ App ──► Gateway ───────────────────�
           │
           ├─ usage_recording real cost recorded, reservation reconciled     [module 3]
           ├─ output_scan     did the answer leak the system prompt?         [module 5]
-          └─ defense_feedback  leaks become a learning signal for 6a        [module 6a]
+          ├─ defense_feedback  leaks become a learning signal for 6a        [module 6a]
+          │
+          └─ audit_log       one hash-chained receipt, on EVERY exit path   [module 7]
+                             (allowed, blocked or failed), written in the
+                             background after the response has gone
+
 ```
 
 If any stage crashes, the request is **blocked** (fail-closed, ADR-0001).
@@ -60,7 +65,8 @@ If any stage crashes, the request is **blocked** (fail-closed, ADR-0001).
 | 2026-10-10 | 6a hardening pass (16 gaps checked, 10 fixed) | `18beb09`..`271d483` |
 | 2026-10-10 | Module 6b: RL session agent, two training runs, both NO-GO | `6236a89`..`5a94307` |
 | 2026-10-12 | Data expansion started: 4x more training data, new locked test set | `7c026df`, `ca6f872` |
-| 2026-10-13 | Classifier v2 training (in progress) | — |
+| 2026-10-13 | Classifier v2 shipped as a recorded override; RL v3 NO-GO | `9897a4e`..`c124640` |
+| 2026-10-13 | Module 7: tamper-evident audit log (hash chain, trigger, tamper demo) | see PROGRESS.md |
 
 ---
 
@@ -314,6 +320,50 @@ If any stage crashes, the request is **blocked** (fail-closed, ADR-0001).
 
 ---
 
+### Module 7 — Tamper-evident audit logging — 2026-10-13
+
+- **Goal:** one receipt per request recording what every module decided
+  (cost, PII counts, threat score, the bandit's action, the session agent's
+  action, the outcome), stored so that nobody, not even a database admin, can
+  quietly change it.
+- **The idea in one line:** each receipt stores the SHA-256 hash of *its own
+  contents plus the previous receipt's hash*. Change any old receipt and its
+  hash stops matching, and the next receipt no longer links to it. `verify`
+  walks the chain and names the first broken entry.
+- **Gap found before building:** the audit stub only ran on the *success*
+  path. Every blocked attack, budget refusal and lockout would have been
+  missing from the audit log, which is exactly what an auditor wants to see.
+  The chat endpoint was restructured so every exit path is audited (approved
+  by Chinmay before implementation).
+- **Three layers (ADR-0002):** an ORM guard (the app can't update or delete an
+  entry), a Postgres trigger (nobody can, unless they're a superuser who turns
+  it off), and the hash chain (catches the superuser too).
+- **Logging adds no waiting:** the request only drops the entry into an
+  in-memory queue; one background worker chains and writes it. Measured A/B on
+  Postgres: no meaningful latency difference. Writer: ~940 entries/s.
+- **Things found by checking instead of assuming:**
+  - The in-memory SQLite test DB gives every session the **same connection**:
+    a probe showed one session's commit also committing another's pending
+    insert. Tests moved to a per-test SQLite file in WAL mode.
+  - SQLAlchemy's pool `TimeoutError` is **not** Python's `TimeoutError`; the
+    writer would have dropped entries when the pool was busy. Fixed and tested.
+  - `echoed_redaction_tokens` is a list, not a count. The first draft would have
+    crashed on any response that echoed a token.
+  - The first real-Postgres load test exposed a **module 2 bottleneck**: a new
+    HTTPS client per upstream call, ~300 ms of certificate loading that
+    blocks the event loop, so about 3 requests/s. Profiled, measured and
+    recorded as L2-2, not silently fixed inside module 7.
+- **Live:** in the Docker stack, the trigger rejected UPDATE/DELETE/TRUNCATE
+  from psql, real requests (benign, PII, injection, bad model) were all
+  audited with no raw PII anywhere, and `tamper_demo --postgres` caught a
+  "block -> allow" edit, named the entry and restored it. After a gateway
+  restart the chain continued from the database head.
+- **Honest limits:** a crash loses whatever is still queued (L7-1); deleting
+  the *newest* entries leaves a valid chain, so `verify` reports count and
+  head hash for outside comparison (L7-2); no retention pruning (L7-4).
+- Viva line: *the trigger makes the log hard to change; the hash chain makes
+  any change visible, even by the person who can switch the trigger off.*
+
 ## 5. Lessons that cut across modules
 
 1. **Verify live, not just with tests.** Running the real Docker stack caught
@@ -331,6 +381,10 @@ If any stage crashes, the request is **blocked** (fail-closed, ADR-0001).
    on the same test set until something passes.
 7. **Report honestly.** "The bandit ties a threshold" and "the DQN is NO-GO" are
    real findings, with the reason and the evidence.
+8. **Measure before blaming.** When the Postgres load test stalled, Postgres
+   turned out to be idle (`ClientRead`), an A/B showed the audit log cost
+   nothing, and a profile named the real cause (a module 2 HTTPS client per
+   request). Each step ruled one thing out before the next guess.
 
 ## 6. Interview / viva cheat sheet
 
@@ -352,16 +406,28 @@ If any stage crashes, the request is **blocked** (fail-closed, ADR-0001).
   one of three: a 194-row old benchmark, by 6 attacks. On a 5× larger locked
   test the old model flags 27.5% of benign prompts. We recorded it as an
   override with reasons rather than quietly changing the rule.
+- **What makes the audit log tamper-evident and not just read-only?** Each
+  entry's hash covers its contents and the previous entry's hash. The
+  trigger stops normal users; a superuser can disable it, but can't make
+  `verify` pass after an edit without rewriting every later hash, and the
+  head hash can be recorded outside the database.
+- **What can't the hash chain detect?** Deleting the newest entries: the rest
+  is still a valid chain. That's why `verify` returns `entry_count` and
+  `head_hash` (L7-2).
+- **Doesn't logging slow every request down?** No: the request only queues the
+  entry. Measured A/B on Postgres: no meaningful difference.
 - **What would you improve?** Re-fit the bandit's bands to calibrated
   scores, a larger validation set for the RL lockout constraint, admin auth (module 8), real session logs to replace the
   simulator (L6b-3).
 
 ## 7. What's next
 
-1. (Optional) Pre-registered re-fit of 6a's band edges to v2's scores (L6a-30).
-2. Module 7: audit logging (tamper-evident).
-3. Module 8: admin dashboard (Next.js) and admin authentication.
-4. Module 9: testing strategy; Module 10: deployment.
+1. Small fix awaiting approval: one shared HTTPS client per provider (L2-2),
+   the gateway's real throughput limit.
+2. Module 8: admin dashboard (Next.js) and admin authentication; the audit log
+   viewer and its "verify integrity" button are a planned demo moment.
+3. Module 9: testing strategy; Module 10: deployment.
+4. (Optional) Pre-registered re-fit of 6a's band edges to v2's scores (L6a-30).
 
 ---
 
@@ -372,3 +438,4 @@ If any stage crashes, the request is **blocked** (fail-closed, ADR-0001).
 - 2026-10-13 (later): data expansion section updated with the v2 result and the
   v3 attempt.
 - 2026-10-13 (end of day): v3 result, v2 override, 6a re-check, RL v3 NO-GO.
+- 2026-10-13 (night): module 7, tamper-evident audit logging.

@@ -5,10 +5,17 @@ Sets dummy required env vars *before* any `app.*` module is imported, so
 instantiated in CI and local runs without a real `.env` file present.
 Real values always win if they're already set in the environment.
 
-DB-dependent tests run against an in-memory SQLite database (via the
-`get_db` dependency override), not a live Postgres instance — keeps unit
-and integration tests fast and hermetic. The Postgres-specific migration
+DB-dependent tests run against a throwaway SQLite database file per test
+(via the `get_db` dependency override), not a live Postgres instance — keeps
+unit and integration tests fast and hermetic. The Postgres-specific migration
 in alembic/versions/ is exercised separately, against a real Postgres.
+
+It is a file in WAL mode rather than `:memory:` because the audit writer
+(module 7) needs its own connection: an in-memory aiosqlite engine hands
+every session the *same* connection (StaticPool), so the writer's commit
+would also commit, and survive the rollback of, whatever the request's
+session had pending. A file gives each session a real connection; WAL lets
+the writer write while a request session holds a read transaction.
 """
 import os
 
@@ -21,9 +28,11 @@ os.environ.setdefault("REDACTION_VAULT_KEY", "CsmRGHfMdzTqw8f6YCOh6vsLs9cAxgnDuo
 import pytest
 from fakeredis.aioredis import FakeRedis
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import settings
+from app.core.audit.writer import AuditWriter, reset_audit_writer, set_audit_writer
 from app.core.auth import hash_key
 from app.core.defense.rl.policy import reset_session_policy_cache
 from app.core.defense.store import bandit_store
@@ -118,16 +127,44 @@ def isolated_session_policy(monkeypatch):
 
 
 @pytest.fixture
-async def db_session():
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+async def db_engine(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _wal(dbapi_connection, _record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.close()
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    yield engine
+    await engine.dispose()
 
-    session_maker = async_sessionmaker(engine, expire_on_commit=False)
+
+@pytest.fixture
+def session_maker(db_engine):
+    return async_sessionmaker(db_engine, expire_on_commit=False)
+
+
+@pytest.fixture
+async def db_session(session_maker):
     async with session_maker() as session:
         yield session
 
-    await engine.dispose()
+
+@pytest.fixture
+async def audit_writer(session_maker):
+    """A running audit writer on the test database, installed as the
+    process-wide one (the app's lifespan, which starts it in production,
+    never runs under ASGITransport). `await audit_writer.flush()` waits
+    until everything queued is written."""
+    writer = AuditWriter(session_maker)
+    writer.start()
+    set_audit_writer(writer)
+    yield writer
+    await writer.stop()
+    reset_audit_writer()
 
 
 @pytest.fixture
@@ -151,7 +188,7 @@ async def fake_redis():
 
 
 @pytest.fixture
-async def client(db_session, seeded_team_and_key, fake_redis):
+async def client(db_session, seeded_team_and_key, fake_redis, audit_writer):
     async def _override_get_db():
         yield db_session
 

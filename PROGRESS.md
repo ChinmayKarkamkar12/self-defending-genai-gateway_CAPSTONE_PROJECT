@@ -274,11 +274,62 @@
   - **LIMITATIONS:** L5-1 resolved; L5-2 mitigated; L5-8 and L6a-30 added; L6a-1 and L6b-10 updated.
   - **Pushed to `origin/main` on 2026-10-13** (commits `7c026df`..`7c648c9`, authored by Chinmay, no Claude co-author trailer). GitHub Actions run on `7c648c9`: **success** (https://github.com/ChinmayKarkamkar12/self-defending-genai-gateway_CAPSTONE_PROJECT/actions/runs/38387060798).
 
+- [x] Module 7: Tamper-evident audit logging. Completed 2026-10-13, built on `main` directly (same pattern as modules 2-6b).
+  - **What it is:** one hash-chained, append-only `AuditLogEntry` per authenticated request, holding what every module decided (cost/tokens, PII entity counts, threat score, 6a action + `threat_event_id`, 6b session action, outcome category, HTTP status, latency). `entry_hash = sha256(prev_hash + canonical JSON of every other column)`; `GENESIS_HASH` = 64 zeros.
+  - **Files:** `app/core/audit/{hashing,guard,entry,writer,verify}.py`, `app/api/audit_admin.py`, `app/core/stages/audit_log.py` (was a stub), migration `0008_audit_log`, `scripts/tamper_demo.py`, `docs/adr/0002-audit-log-immutability.md`.
+  - **Decisions (approved by Chinmay at the start of the session):**
+    1. *Every* authenticated request is audited, not only successful ones. Before this module, `run_audit_log` only ran on the success path, so blocked attacks would never have been logged. `chat.py` now has `_process()`, which marks `ctx.metadata["audit_outcome"]` on every exit path; `chat_completions` queues the entry after it returns or raises. `run_stages` records `blocked_by` (stage name).
+    2. No retention/pruning (L7-4).
+    3. 401s are not audited (L7-5).
+  - **Other design points (all verified, not assumed):**
+    - **Outcome is a fixed enum** (`AuditOutcome`, 11 values), never the free-text block reason or error message.
+    - **The model name** is stored only if it matches `[A-Za-z0-9._:/-]{1,100}` *and* routes to a provider; otherwise it's `<unrecognized>`, because it is client-controlled text.
+    - **`echoed_redaction_tokens`** is stored as a count. It's a list in `output_flags`; the first draft assumed an int and would have crashed.
+    - **Immutability = ORM guard + Postgres trigger + hash chain** (ADR-0002):
+      - the guard catches per-object and bulk `update()`/`delete()`;
+      - the trigger rejects UPDATE/DELETE (row-level) and TRUNCATE (statement-level).
+    - **Canonical hashing:** UTC ISO timestamps (naive = UTC, for SQLite), cost quantized to 6 dp, sorted keys, `allow_nan=False`. The hash round-trips through Postgres JSONB/numeric/timestamptz; tested on real Postgres.
+    - **Writer:** bounded `asyncio.Queue` (10k) and one worker, writing batches of up to 100 per transaction.
+      - Under a Postgres advisory lock it reads the head and appends. Sequence numbers are `last + 1`, not a DB sequence, so a rollback can't leave a gap.
+      - Transient errors (OperationalError, InterfaceError, **sqlalchemy's pool TimeoutError, which is not the builtin one**, invalidated connections) are retried with backoff.
+      - A permanent error splits the batch, and a single rejected entry is dropped and counted (`writer.dropped`).
+      - Started and drained in the app `lifespan`.
+    - **Fail-closed:** if the entry can't be queued (queue full, writer not running), a successful request becomes a 503 under `FAIL_MODE=closed`. For a request that is already being refused, an audit failure is logged and the real error code is kept.
+    - **Error responses now also carry `x-gateway-request-id`.**
+  - **Test infrastructure change:**
+    - The test DB is now a per-test SQLite *file* in WAL mode (`db_engine`/`session_maker` fixtures in `conftest.py`), not `:memory:`. Measured reason: aiosqlite's in-memory engine uses StaticPool, so every session shares one connection. In a probe, session B's commit also committed session A's pending insert, and A's rollback then undid nothing.
+    - The new `audit_writer` fixture runs a writer on the test DB; `client` depends on it.
+    - All 297 existing tests passed unchanged on the new fixtures.
+  - **Tests:** 46 new, plus 6 real-Postgres tests (`tests/test_audit_postgres.py`, skipped unless `TEST_POSTGRES_DSN` is set; each creates a scratch DB, runs `alembic upgrade head`, then drops it).
+    - **Totals:** 343 pass + 6 skipped normally; **349/349** with Postgres. `ruff check` clean.
+    - **Covered:** every plan test (headline tamper test, no-PII in mask *and* tokenize mode, response-before-write ordering, 100 concurrent requests with no loss, query filters).
+    - **Also covered:**
+      - every outcome path;
+      - deleted-middle-row and rehashed-entry detection;
+      - tail truncation (only visible via `entry_count`/`head_hash`);
+      - ORM guard;
+      - retry, poison entry, pool timeout;
+      - trigger;
+      - JSONB round trip;
+      - two writers don't fork the chain;
+      - CSV formula escaping.
+  - **Measured:**
+    - Audit A/B on Postgres: 1 request 377 ms off vs ~395 ms on; 20 concurrent p50 7.4 s vs 7.4 / 6.6 s. **No meaningful added latency.**
+    - Writer throughput: ~940 entries/s batched, ~62/s unbatched.
+  - **Found and recorded, not fixed (outside module 7):** **L2-2.** Both provider adapters create a new `httpx.AsyncClient` per call, and each loads the CA bundle synchronously (~300 ms, blocking the event loop). Profiled: `load_verify_locations` 21 calls x 0.297 s. This caps the gateway at about 3 req/s, and it is why 100 concurrent requests exhausted the DB pool in the first Postgres load run. The load tests stub the provider at the adapter so they measure the audit log, not this.
+  - **Live Docker (2026-10-13):**
+    - 0007 -> 0008 applied; `\d audit_log_entries` matches the model, both triggers present.
+    - psql UPDATE/DELETE/TRUNCATE are each rejected with "append-only".
+    - Real requests (benign -> 502 placeholder key, PII, injection, bad model) were all audited with the correct outcomes. The PII row holds `{CREDIT_CARD:1, PHONE_NUMBER:1, EMAIL_ADDRESS:1}` only; zero PII hits across the logs API, the CSV export and the gateway container logs.
+    - `/logs/verify` valid; `tamper_demo --postgres` caught the edit to entry #2, named it, and restored it; CLI `python -m app.core.audit.verify` valid.
+    - Clean shutdown with 9/9 entries stored; after a restart, entry 10 chained onto entry 9's hash.
+    - Observation, added to L5-2: a bare "hello" scored 0.72 injection, after the rule-based session agent had tightened the session (bias 0 -> 0.25 -> 0.5) following a real injection.
+  - **LIMITATIONS:** L7-1 to L7-8 and L2-2 added; L5-2 and L2-1 updated. README has an audit-log section and the durable-queue scaling note the plan asks for.
+
 ## In progress
 (none)
 
 ## Not started
-- [ ] Module 7: Audit logging
 - [ ] Module 8: Admin dashboard
 - [ ] Module 9: Testing strategy
 - [ ] Module 10: Deployment
@@ -286,7 +337,7 @@
 
 ## Notes for next session
 - **`LIMITATIONS.md` is the living register of known limitations.** Add entries when a module ships with one; when something in an entry's "Unblocked by" column becomes available, revisit it; mark fixed ones `Resolved` (don't delete them).
-- **Next up: Module 7 (audit logging).** The data expansion is done (see above). The DQN has been NO-GO three times, so `SESSION_POLICY=auto` (the default) runs the rule-based fallback. For module 7: `session_policy_events` holds every session-agent run (policy, proposed/actual action, bias before/after, numeric features), and `threat_events.session_id` / `forced_escalation` link 6a decisions to sessions. Decision 2026-10-13: the L6a-30 re-fit is NOT required and is skipped for now (an optional polish task if time is left after module 10). Start module 7 in the next session (`project_plan/07-audit-logging.md`). Chinmay also wants short learning sessions alongside: after each piece of module 7, explain what was built and quiz him.
+- **Next up: Module 8 (admin dashboard).** Module 7 is done (see above). The dashboard's log viewer uses `GET /v1/admin/logs` (cursor pagination: pass `next_before_sequence` back as `before_sequence`; filters `team_id`, `from`, `to`, `action`, `outcome`), `GET /v1/admin/logs/verify` (returns `valid`, `first_broken_entry`, `first_broken_sequence`, `reason`, `entry_count`, `head_hash` - a superset of the plan's `{valid, first_broken_entry}`) and `GET /v1/admin/logs/export?format=csv`. Admin auth (L3-1, L6a-4, L7-7) is module 8's job. Before module 8, consider approving the small L2-2 fix (one shared httpx client per provider): it is the gateway's real throughput limit. Audit entries can never be deleted (trigger), so module 10 should seed demo data into a fresh database. Live demo: `docker compose exec gateway python -m scripts.tamper_demo --postgres`. Chinmay wants short learning sessions alongside: explain what was built and quiz him.
 - Docker stack: run `docker compose up -d --build` (never plain `up -d` after changing code or requirements - if the build fails, plain `up` silently runs the old image), then `docker compose exec gateway alembic upgrade head` and `docker compose exec gateway python -m scripts.seed` (must be `-m`; `python scripts/seed.py` fails with `No module named 'app'`). The gateway won't start unless `training/checkpoints/final/` exists on the host.
 - **Backup (2026-10-13):** the shipped classifier v2 (with calibration.json), v1, all of `training/data/` (including the locked v2 test, SHA `21ce7fa0...`), the 15 RL v3 agents and the v1/v2/v3 test results are in the **private** Hugging Face repo `Chinmayyyyy/genai-gateway-classifier`. All 82 files were verified: sizes match, and sha256 matches for all 33 large files. Its README maps each folder to its path in this repo. To restore: `hf download Chinmayyyyy/genai-gateway-classifier --local-dir hf_restore` (needs `hf auth login` with access to the repo), then copy the folders back. Upload staging (hard links) is in `training/checkpoints/hf_backup/` (gitignored).
 - The trained checkpoint lives only on this machine at `training/checkpoints/final/` (gitignored, ~700 MB; since 2026-10-13 this is classifier v2 plus `calibration.json`; v1 is at `training/checkpoints/v1/final/`). Rebuilding v2 from a fresh clone: `training/prepare_dataset_v2.py`, then `train_classifier.py --data-dir training/data/v2 --output-dir training/checkpoints/v2`, then `calibrate.py`. A fresh clone must re-run `training/prepare_dataset.py` + `training/train_classifier.py` (~40-45 min on the RTX 3050) before the gateway can start, since the lifespan hook loads it at startup. The Docker image doesn't include it yet — mounting it / setting `THREAT_MODEL_DIR` is module 10's job.

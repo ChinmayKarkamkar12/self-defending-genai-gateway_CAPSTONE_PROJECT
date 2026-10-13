@@ -10,6 +10,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     DateTime,
     Float,
@@ -91,6 +92,26 @@ class SessionAction(StrEnum):
     RELAX = "relax"
     CHALLENGE = "challenge"
     LOCKOUT = "lockout"
+
+
+class AuditOutcome(StrEnum):
+    """What happened to a request, as one fixed category per audit entry.
+    Deliberately an enum and not the free-text block reason / error
+    message: those can carry provider or client text, and the audit log
+    must never hold anything but fixed values, counts and scores. See
+    project_plan/07-audit-logging.md and app/core/audit/entry.py."""
+
+    ALLOWED = "allowed"
+    BLOCKED_SESSION_LOCKED = "blocked_session_locked"
+    BLOCKED_BUDGET = "blocked_budget"
+    BLOCKED_RATE_LIMIT = "blocked_rate_limit"
+    BLOCKED_THREAT = "blocked_threat"
+    ESCALATED = "escalated"
+    BLOCKED_OUTPUT_LEAK = "blocked_output_leak"
+    REJECTED_UNKNOWN_MODEL = "rejected_unknown_model"
+    UPSTREAM_ERROR = "upstream_error"
+    PIPELINE_ERROR = "pipeline_error"
+    INTERNAL_ERROR = "internal_error"
 
 
 # JSONB on Postgres (as the module plan specifies), plain JSON elsewhere so
@@ -336,3 +357,46 @@ class BanditState(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
+
+
+class AuditLogEntry(Base):
+    """One hash-chained, append-only audit record per authenticated request.
+    See project_plan/07-audit-logging.md §2-3 and docs/adr/0002.
+
+    `entry_hash` = sha256(prev_hash + canonical JSON of every other column),
+    and `prev_hash` is the previous entry's `entry_hash` (GENESIS_HASH for
+    the first). Rows are never updated or deleted: a Postgres trigger
+    (migration 0008) and an ORM guard (app/core/audit/guard.py) both refuse
+    it. Holds no prompt text and no raw PII: redaction_summary is entity
+    type -> count, threat_score is three probabilities, outcome is an enum.
+    """
+
+    __tablename__ = "audit_log_entries"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    sequence_number: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    request_id: Mapped[uuid.UUID] = mapped_column(nullable=False, index=True)
+    team_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("teams.id"), nullable=False, index=True)
+    api_key_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("api_keys.id"), nullable=False)
+    model: Mapped[str] = mapped_column(String(100), nullable=False)
+    http_status: Mapped[int] = mapped_column(Integer, nullable=False)
+    outcome: Mapped[AuditOutcome] = mapped_column(String(30), nullable=False)
+    # The stage that blocked or failed the request, if one did.
+    pipeline_stage: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    redaction_summary: Mapped[dict[str, Any]] = mapped_column(_JSONB, nullable=False)
+    # Null when the request was stopped before threat detection ran.
+    threat_score: Mapped[dict[str, Any] | None] = mapped_column(_JSONB, nullable=True)
+    # Module 6a's applied action (ThreatEvent.outcome), "not_evaluated" if
+    # the request never reached the bandit.
+    action_taken: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    threat_event_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    session_action: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    output_flags: Mapped[dict[str, Any] | None] = mapped_column(_JSONB, nullable=True)
+    tokens_in: Mapped[int] = mapped_column(Integer, nullable=False)
+    tokens_out: Mapped[int] = mapped_column(Integer, nullable=False)
+    cost_usd: Mapped[Decimal] = mapped_column(Numeric(10, 6), nullable=False)
+    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    prev_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    entry_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)

@@ -51,6 +51,12 @@ async def usage_recording_stage(ctx: RequestContext) -> StageResult:
         )
     )
     await db.commit()
+    # For the audit log (module 7).
+    ctx.metadata["usage"] = {
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "cost_usd": cost_usd,
+    }
 
     policy = await get_budget_policy(db, ctx.team_id)
     if policy is not None:

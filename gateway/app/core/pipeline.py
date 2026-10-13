@@ -18,6 +18,12 @@ runs after pii_redaction. defense_feedback runs after output_scan
 whatever output_scan decided, because a leak output_scan blocks on is
 exactly the evidence the bandit needs to learn from.
 
+audit_log (module 7) is not only the last step of a successful request:
+the chat endpoint runs it on every exit path of an authenticated request -
+allowed, blocked by any stage, or failed - so the audit log holds every
+decision, not only the requests that got through. It only queues the entry;
+a background writer chains and stores it (app/core/audit/writer.py).
+
 `usage_recording` runs unconditionally right after the provider responds,
 before output_scan - cost was already incurred with the provider regardless
 of what output_scan decides, so accounting must not be skippable by a later
@@ -96,6 +102,8 @@ async def run_stages(stages: list[PipelineStage], ctx: RequestContext) -> StageR
     for stage in stages:
         result = await _run_stage(stage, ctx)
         if result.decision == Decision.BLOCK:
+            # For the audit log (module 7): which stage stopped the request.
+            ctx.metadata["blocked_by"] = getattr(stage, "__name__", repr(stage))
             return result
         if result.decision == Decision.MODIFY and result.modified_body is not None:
             ctx.body = result.modified_body
@@ -122,7 +130,8 @@ async def run_defense_feedback(ctx: RequestContext) -> None:
 
 
 async def run_audit_log(ctx: RequestContext) -> None:
-    """Best-effort audit log call; never raises under FAIL_MODE=open, still
-    honors FAIL_MODE=closed by re-raising so the caller can decide.
+    """Queue the request's audit entry (module 7). Never raises under
+    FAIL_MODE=open; under FAIL_MODE=closed a failure to queue raises
+    StageFailure so the caller can refuse an unaudited success.
     """
     await _run_stage(audit_log_stage, ctx)

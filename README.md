@@ -65,9 +65,39 @@ pytest
 ruff check .
 ```
 
+The real-Postgres audit-log tests (`tests/test_audit_postgres.py`) are skipped
+unless a Postgres server is given; each one creates and drops its own scratch
+database:
+
+```bash
+docker compose up -d postgres
+TEST_POSTGRES_DSN=postgresql://postgres:postgres@localhost:5432/postgres pytest tests/test_audit_postgres.py
+```
+
+## Audit log (module 7)
+
+Every authenticated request gets one hash-chained entry in
+`audit_log_entries`: what each module decided (cost, PII counts, threat
+score, bandit action, session action, outcome), never prompt text or raw PII.
+
+```bash
+curl http://localhost:8000/v1/admin/logs                     # query (filters: team_id, from, to, action, outcome)
+curl http://localhost:8000/v1/admin/logs/verify              # re-check the whole chain
+curl "http://localhost:8000/v1/admin/logs/export?format=csv" # compliance export
+docker compose exec gateway python -m scripts.tamper_demo --postgres   # tamper with one entry, watch verify catch it
+```
+
+**Scaling limitation, by design:** entries are queued in memory
+(`asyncio.Queue`) and written by one background worker, so logging never
+delays a response. A crash loses whatever is still queued (normally a few
+milliseconds' worth). A production system would use a durable queue such as
+Redis Streams or Kafka here. See [`LIMITATIONS.md`](LIMITATIONS.md) L7-1 to
+L7-8 and [`docs/adr/0002-audit-log-immutability.md`](docs/adr/0002-audit-log-immutability.md).
+
 ## Status
 
-🚧 Modules 1–5 and 6a (tactical adaptive defense) complete. See
+🚧 Modules 1–7 complete (through tamper-evident audit logging); the
+dashboard (module 8) is next. See
 [`PROGRESS.md`](PROGRESS.md) for module-by-module status,
 [`LIMITATIONS.md`](LIMITATIONS.md) for known limitations, and
 [`project_plan/11-build-roadmap.md`](project_plan/11-build-roadmap.md) for
