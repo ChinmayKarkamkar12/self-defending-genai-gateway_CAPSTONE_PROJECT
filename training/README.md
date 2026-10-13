@@ -822,3 +822,78 @@ On the old test alone, v1 misses 6 of 94 attacks and v2 misses 12. That
 
 No further classifier attempt is made against these test sets. A third look
 would turn them into a tuning set.
+
+## Override (2026-10-13): v2 ships despite failing criterion 3
+
+**Decision by the project team, recorded as an override of the
+pre-registered rule, not a pass.** After v3 also failed, the team chose to
+ship v2 in the gateway (`training/checkpoints/final/` now holds v2 with its
+`calibration.json`; v1 is kept at `training/checkpoints/v1/final/`).
+
+Reasons:
+- The criterion that failed protects one benchmark: the old 194-row test,
+  where v2 misses 6 more attacks than v1 (12 vs 6 of 94). It was written to
+  catch a regression. It wasn't written to outweigh a 5× larger test.
+- On the new locked test (950 rows) v1 is not usable as a gateway filter: it
+  flags 27.5% of benign prompts and misses 77% of injections. v2: 3.1% and
+  7%.
+- Across both tests combined, v2 misses fewer attacks (28 vs 63 of 498) and
+  flags far fewer benign prompts (18 vs 151 of 646).
+- v2 is chosen over v3 because v2 is better on both tests. This is a choice
+  between two already-scored models, not a new attempt.
+
+Cost, stated plainly: v2 is worse than v1 on the old test's injection class
+(F1 0.769 vs 0.857). The criteria are kept as written, and this section is
+the record that one of them was overridden.
+
+Consequences: the bandit's learned state is reset (migration 0007), 6a is
+re-checked with v2's scores, and the RL v3 pools are scored with v2. The v1
+score caches are kept as `training/data/bandit_scores_*.v1clf.jsonl`, and
+the 6a result with v1 as `checkpoints/bandit_eval.v1clf.json`.
+
+## 6a re-check with classifier v2 (2026-10-13)
+
+`evaluate_bandit.py` re-run with v2 (calibrated, T = 2.24) on the old splits
+(val 196 / test 194, as before) and, with the new `--data v2` option, on the
+data-expansion splits (val 830 / new locked test 950). The bandit state is
+reset by migration 0007. The warm-start bands are defined on the attack score
+(reward.py) and are unchanged: redact from 0.335, escalate from 0.575, block
+from 0.805 (`test_warm_start_bands_match_reward_design` still pins them).
+Outputs: `checkpoints/bandit_eval.json` (old splits) and
+`checkpoints/bandit_eval_v2.json` (new splits). With v1:
+`checkpoints/bandit_eval.v1clf.json`.
+
+Mean reward per request (± std over runs); "Δ" is bandit (realistic) minus
+static-tuned, paired per run, with how many runs the bandit won:
+
+| Experiment | Data | static-tuned | prior-frozen | bandit (full) | bandit (realistic) | Δ realistic |
+|---|---|---|---|---|---|---|
+| A, i.i.d. | old | 0.687 | 0.691 | 0.687 | 0.690 | +0.003 (29/60) |
+| A, i.i.d. | new | 0.696 | 0.699 | 0.700 | 0.697 | +0.001 (30/60) |
+| B, 10% attacks | old | 0.896 | 0.909 | 0.910 | 0.902 | +0.006 (19/20) |
+| B, 10% attacks | new | 0.871 | 0.848 | 0.874 | 0.850 | **−0.020 (1/20)** |
+| B, 2% attacks | old | 0.938 | 0.953 | 0.961 | 0.952 | +0.014 (20/20) |
+| B, 2% attacks | new | 0.910 | 0.884 | 0.925 | 0.886 | **−0.024 (1/20)** |
+| C, FP drift | old | 0.669 | 0.679 | 0.808 | 0.732 | +0.063 (20/20) |
+| C, FP drift | new | 0.651 | 0.634 | 0.762 | 0.657 | +0.007 (9/20) |
+
+What it shows:
+- **i.i.d. (A): still a tie**, on both datasets. The rewards are lower than
+  with v1 (0.72) because v2 misses more of the old test's attacks; on the
+  new data the comparison isn't possible with v1, which flags 27% of benign
+  prompts.
+- **With full feedback the bandit is never worse** than the tuned threshold,
+  and wins clearly under drift (C: +0.139 old, +0.111 new, 20/20 runs).
+- **New: with realistic feedback (2% spot checks) on the new data, the bandit
+  loses to a tuned threshold at low attack rates** (B, 1 of 20 runs). Cause,
+  diagnosed on validation data only: v1's scores were all-or-nothing (98/100
+  benign validation prompts < 0.01, 88/96 attacks > 0.99), so the prior's
+  band edges almost never mattered. v2's calibrated scores are spread out:
+  47 of 463 benign validation prompts score between 0.3 and 0.99, where the
+  prior redacts, escalates or blocks. The tuned threshold is fitted to v2's
+  score distribution; the prior's cut points are not, and 2% spot checks
+  are too slow to move them. Prior-frozen shows the same gap (0.848 vs
+  0.871), so the cause is the prior, not learning.
+- Not fixed in this pass: re-fitting the band edges to v2's scores would
+  have to be done on validation and pre-registered before another look at
+  the test set. Recorded as LIMITATIONS.md L6a-30.

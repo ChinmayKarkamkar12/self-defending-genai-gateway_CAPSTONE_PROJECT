@@ -50,6 +50,10 @@ such): one team's benign traffic trips the classifier, the L5-2 problem.
 190 held-out attacks score 0.95-0.999), so it's a genuine trade-off, not a
 free win. Everything else is real held-out data at a 10% attack rate.
 
+`--data v2` runs the same experiments on the data-expansion splits instead
+(training/data/v2: val 830 rows, the new locked test 950 rows), cached to
+bandit_scores_v2_<split>.jsonl and written to bandit_eval_v2.json.
+
 `--external` additionally re-runs the two real-data probes behind the
 README's "the classifier is bimodal" finding (downloads
 Lakera/gandalf_ignore_instructions and tatsu-lab/alpaca).
@@ -98,6 +102,11 @@ logger = logging.getLogger("evaluate_bandit")
 DATA_DIR = REPO_ROOT / "training" / "data"
 OUTPUT_PATH = REPO_ROOT / "training" / "checkpoints" / "bandit_eval.json"
 SPLITS = ("val", "test")
+# --data choice -> (source directory, score cache prefix, output file)
+DATASETS = {
+    "v1": (DATA_DIR, "bandit_scores_", OUTPUT_PATH),
+    "v2": (DATA_DIR / "v2", "bandit_scores_v2_", OUTPUT_PATH.with_name("bandit_eval_v2.json")),
+}
 A_SHUFFLES = 30
 B_STREAM = 1000
 B_SEEDS = 20
@@ -130,12 +139,13 @@ class Row:
 # ---------------------------------------------------------------- scoring
 
 
-def load_scored(split: str) -> list[Row]:
-    cache = DATA_DIR / f"bandit_scores_{split}.jsonl"
+def load_scored(split: str, dataset: str = "v1") -> list[Row]:
+    source_dir, cache_prefix, _ = DATASETS[dataset]
+    cache = DATA_DIR / f"{cache_prefix}{split}.jsonl"
     if not cache.exists():
         logger.info("scoring %s split with the production classifier (cached afterwards)", split)
         classifier = ThreatClassifier()
-        source = DATA_DIR / f"{split}.jsonl"
+        source = source_dir / f"{split}.jsonl"
         lines = []
         for line in source.read_text(encoding="utf-8").splitlines():
             if not line.strip():
@@ -518,7 +528,9 @@ def markdown_table(policies: dict[str, dict[str, dict[str, float]]]) -> str:
 
 
 def main() -> None:
-    data = {split: load_scored(split) for split in SPLITS}
+    dataset = sys.argv[sys.argv.index("--data") + 1] if "--data" in sys.argv else "v1"
+    output_path = DATASETS[dataset][2]
+    data = {split: load_scored(split, dataset) for split in SPLITS}
     for split, rows in data.items():
         logger.info(
             "%s: %d rows, %d attacks", split, len(rows), sum(r.is_attack for r in rows)
@@ -538,8 +550,9 @@ def main() -> None:
     }
     if "--external" in sys.argv:
         results["external_probes"] = external_probes()
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT_PATH.write_text(json.dumps(results, indent=2), encoding="utf-8")
+    results["dataset"] = dataset
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
 
     a = results["experiment_a_iid"]
     print("\n## Experiment A - i.i.d. held-out data (2 folds x 30 orders)\n")
@@ -572,7 +585,7 @@ def main() -> None:
     if "external_probes" in results:
         print("\n## External probes (attack-probability bands)\n")
         print(json.dumps(results["external_probes"], indent=2))
-    logger.info("\nwrote %s", OUTPUT_PATH)
+    logger.info("\nwrote %s", output_path)
 
 
 if __name__ == "__main__":
