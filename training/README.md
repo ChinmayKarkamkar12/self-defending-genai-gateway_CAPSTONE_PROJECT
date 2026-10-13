@@ -774,3 +774,51 @@ Fitted temperature on v2 validation as before. v3 is scored once per test
 set and replaces v1 only if it passes the **same three criteria, unchanged**
 (compared against v1). If it fails, v1 stays, and any later decision to ship
 v2 or v3 anyway is recorded separately as an override, with its reasons.
+
+## Classifier v3 result (2026-10-13): fails criterion 3, v1 stays
+
+Trained once to completion (two earlier attempts were killed by a low-memory
+guard while writing the optimizer state at epoch 1; both had reached identical
+epoch-1 validation numbers. The completed run used `--save-only-model`).
+Epoch chosen on validation by the pre-registered rule:
+
+| Epoch | v1-origin val macro-F1 | new-origin val macro-F1 | Floor 0.947 |
+|---|---|---|---|
+| **1 (chosen)** | 0.951 | 0.818 | met |
+| 2 | 0.946 | 0.828 | missed |
+
+Temperature fitted on v2 validation: **T = 1.81** (validation NLL 0.377 →
+0.280, attack-score ECE 0.054 → 0.035).
+
+Each model scored once per test set; the decision was applied by
+`apply_classifier_criteria.py`, committed before v3's results existed:
+
+| | v1 | v2 | v3 |
+|---|---|---|---|
+| **New test (950)** macro-F1 | 0.490 | **0.908** | 0.877 |
+| prompt_injection F1 | 0.341 | **0.949** | 0.935 |
+| jailbreak F1 | 0.335 | **0.805** | 0.740 |
+| benign false-positive rate | 0.275 | **0.031** | 0.042 |
+| **Old test (194)** macro-F1 | **0.933** | 0.884 | 0.871 |
+| prompt_injection F1 | **0.857** | 0.769 | 0.759 |
+| benign false-positive rate | **0.010** | **0.010** | 0.030 |
+
+Criteria for v3: (1) ✅ (2) ✅ (3) ❌: old-test macro-F1 0.871 < 0.913, and
+benign FP rate 0.030 > 0.02. **Result: v3 does not replace v1.** Starting from
+v1's weights and oversampling v1 rows did not stop the old-test loss; v3 is
+worse than v2 on both test sets.
+
+Attack-vs-benign view (what the gateway acts on), both tests together (498
+attacks, 646 benign):
+
+| | attacks missed | benign flagged |
+|---|---|---|
+| v1 | 63 (12.7%) | 151 (23.4%) |
+| v2 | 28 (5.6%) | 18 (2.8%) |
+| v3 | 36 (7.2%) | 26 (4.0%) |
+
+On the old test alone, v1 misses 6 of 94 attacks and v2 misses 12. That
+6-attack gap on 194 rows is the whole reason v2 failed criterion 3.
+
+No further classifier attempt is made against these test sets. A third look
+would turn them into a tuning set.
