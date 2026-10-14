@@ -414,11 +414,29 @@
     - GitHub Actions on `6c65ec4`: **success**, both jobs (https://github.com/ChinmayKarkamkar12/self-defending-genai-gateway_CAPSTONE_PROJECT/actions/runs/38535991692).
     - Not confirmed: whether the 6 Postgres tests ran in CI or were skipped. The job now sets `TEST_POSTGRES_DSN` with a Postgres service, but the job log needs GitHub auth to read. Check it in the Actions UI.
 
+- [x] Module 9: Testing strategy. Completed 2026-10-14, on `main` (code `04ccd4d`). Full write-up: `docs/TESTING.md`.
+  - **New cross-cutting tests** (each on SQLite + fakeredis, and on a scratch Postgres + real Redis when `TEST_POSTGRES_DSN`/`TEST_REDIS_URL` are set; `tests/pipeline_stack.py` builds both):
+    - `test_full_pipeline.py` (7 x 2): benign, injection, PII, over budget, fail-closed, fail-open contrast, injection in a tool call (with a harmless control). Real classifier, Presidio, bandit, session agent at `auto`, Redis budgets, audit writer; only the provider mocked. Skips without the checkpoint.
+    - `test_security_boundaries.py` (4 x 2): no raw PII in any table, Redis key, DEBUG log line, chat/admin response or upstream request; the gateway key never logged/stored/returned/forwarded; provider keys never reach clients, logs or storage (even when the provider's error quotes them); a revoked key is refused on the next request.
+  - **Real problems found and fixed** (every guarding test was run against the old code and failed there):
+    1. Presidio logged the analysed text at DEBUG (and at ERROR for IBANs); `LOG_LEVEL=DEBUG` would have put raw PII in the logs. Its loggers are now silenced (`analyzer.py`).
+    2. Upstream exception text went to clients in the 502 detail (could carry the upstream URL or quoted content). Now `describe_http_error` (status code / timeout / error type only).
+    3. Tool call arguments were not redacted, not scored, not output-scanned. Now all three, plus the bandit's strip step.
+    4. Raw JSON scores as an attack with the real model (`{"query": "onboarding guide for new employees"}` 0.979 vs 0.031 for the value), so the classifier scores the string values only (`messages.argument_text`). Arguments are never cut; what stays in them counts toward the strip re-check (blocks if still an attack).
+  - **Also added:** tests for failures after the provider answered (the unchecked reply is withheld), the app lifespan, the stale-feature-version guard, Ollama errors, `argument_text`.
+  - **Definition of done:**
+    - [x] All full-pipeline integration tests pass against real stage implementations: 14/14 (both backends) with the shipped checkpoint, Postgres and Redis from Docker.
+    - [x] All security boundary tests pass: 8/8 (both backends).
+    - [x] CI runs the full suite on every push and blocks on failure: `ci.yml` now has Redis + Postgres services and `TEST_REDIS_URL`, prints coverage and every skip with its reason. The real-model files need the checkpoint, so per-push CI skips them (listed by `-rs`); the new `full-checks.yml` runs them (and fails if any skip) on push to main, weekly and on demand.
+    - [x] Coverage report exists and was reviewed once: 97% line+branch of `gateway/app/` (3,491 statements), per-area table in `docs/TESTING.md`; the gaps that mattered were tested (above). Not enforced as a gate.
+  - **Totals:** gateway 437/437 on Postgres + Redis with no skips; ruff clean; dashboard 45/45 and 16/16 E2E against the rebuilt Docker gateway.
+  - **Evaluations re-run with the CI commands:** `evaluate.py` on the locked v2 test: macro-F1 0.908, benign FP 3.1% (matches the shipped result); `evaluate_bandit.py --data v2`: identical output to the stored run, 76 s with cached scores.
+  - **LIMITATIONS:** L9-1 (five request fields still unchecked: message `name`, `user`, tool definitions, `response_format`, unknown fields), L9-2 (code-like tool arguments false-positive), L9-3 (full checks need `HF_TOKEN`), L9-4 to L9-6 (load, red team, failover: out of scope by design), L9-7 (provider always mocked; no mutation tool). L8-6 partly addressed; L5-2 updated.
+
 ## In progress
 (none)
 
 ## Not started
-- [ ] Module 9: Testing strategy
 - [ ] Module 10: Deployment
 - [ ] Module 11: Build roadmap (reference only, not implemented)
 
@@ -426,7 +444,7 @@
 - **TODO tomorrow - module 7 open issues (noted 2026-10-13, in this order):**
   1. ~~Push~~ - done 2026-10-13, CI green (see the module 7 entry).
   2. ~~L2-2~~ - fixed 2026-10-14 (`18eadc2`, see the module 7 review pass).
-  3. **L5-2 data point:** a bare "hello" scored 0.72 injection in the live gateway (the session had been tightened). Check whether it reproduces in a fresh session with the real classifier (`training/evaluate.py` or a direct `ThreatClassifier.score`). If it does, add it to the hard-negative list for any future classifier work; no retraining planned now.
+  3. ~~**L5-2 data point**~~ - checked 2026-10-14 (module 9): it reproduces in a fresh process with the shipped checkpoint ("hello" 0.805, "No results." 0.903). Recorded in L5-2; add both to the hard-negative list for any future classifier work. No retraining planned.
   4. **Learning session pending:** Chinmay hasn't answered the 3 module 7 quiz questions yet: (a) why editing entry #5 breaks #6; (b) what protects the log from a superuser who disables the trigger; (c) why one serialized writer. Go over them, plus a quick run of `docker compose exec gateway python -m scripts.tamper_demo --postgres` as demo practice.
   5. **Open module 7 limitations (accepted, no action needed tomorrow, see LIMITATIONS.md):**
      - L7-1: a crash loses queued entries.
@@ -442,16 +460,12 @@
      - The live `gateway` DB now holds 10 real audit entries that can never be deleted (trigger). That's fine for dev; use a fresh DB for demo seeding (module 10).
      - `ruff format` isn't enforced in this repo, so the new files match the existing style, not the formatter.
 - **`LIMITATIONS.md` is the living register of known limitations.** Add entries when a module ships with one; when something in an entry's "Unblocked by" column becomes available, revisit it; mark fixed ones `Resolved` (don't delete them).
-- **Next up: Module 9 (testing strategy).** Module 8 is done.
-  - The dashboard runs at http://localhost:3000 under `docker compose up -d --build`.
-  - Admin `chinmay` exists in the dev database with a random password set during testing. **Chinmay must set his own:** `docker compose exec gateway python -m scripts.create_admin chinmay`.
-  - E2E needs `E2E_ADMIN_USER`/`E2E_ADMIN_PASSWORD` in the environment.
-  - Module 9 candidates:
-    - a disposable seeded test database for E2E (L8-6);
-    - a load test now that L2-2 is fixed;
-    - profiling the ~9 req/s ceiling (likely CPU inference).
-  - Module 10 should seed demo data into a fresh database: the dev log holds 145 permanent entries, mostly the morning's load-test failures.
-  - Chinmay still owes the module 7 quiz answers. Teach module 8 too (BFF + httpOnly cookie; why the route map; why the review E2E is intercepted).
+- **Next up: Module 10 (deployment).** Module 9 is done.
+  - **Chinmay must add the GitHub secret `HF_TOKEN`** (a *read* token for the private repo `Chinmayyyyy/genai-gateway-classifier`): GitHub -> repo Settings -> Secrets and variables -> Actions -> New repository secret. Until then the "Full checks" workflow fails on every push to `main`, by design (L9-3). Then re-run it from the Actions tab and record the result here.
+  - Module 10 should seed demo data into a fresh database: the dev log holds 145+ permanent entries, mostly the morning's load-test failures.
+  - Candidates left from module 9's notes: a load test (L9-4); profiling the ~9 req/s ceiling (likely CPU inference); closing L9-1 (decide whether to refuse unknown request fields).
+  - Teaching: Chinmay still owes the module 7 quiz answers. Teach module 8 (BFF + httpOnly cookie; why the route map; why the review E2E is intercepted) and module 9 (what a cross-cutting test is; why each test was run against the old code).
+  - Local leftovers outside the repo: `E:andit_eval_run.log` and `E:andit_eval_v2.bak.json` (temporary copies from timing the bandit evaluation, written one folder too high by mistake; safe to delete).
 - Docker stack: run `docker compose up -d --build` (never plain `up -d` after changing code or requirements - if the build fails, plain `up` silently runs the old image), then `docker compose exec gateway alembic upgrade head` and `docker compose exec gateway python -m scripts.seed` (must be `-m`; `python scripts/seed.py` fails with `No module named 'app'`). The gateway won't start unless `training/checkpoints/final/` exists on the host.
 - **Backup (2026-10-13):** the shipped classifier v2 (with calibration.json), v1, all of `training/data/` (including the locked v2 test, SHA `21ce7fa0...`), the 15 RL v3 agents and the v1/v2/v3 test results are in the **private** Hugging Face repo `Chinmayyyyy/genai-gateway-classifier`. All 82 files were verified: sizes match, and sha256 matches for all 33 large files. Its README maps each folder to its path in this repo. To restore: `hf download Chinmayyyyy/genai-gateway-classifier --local-dir hf_restore` (needs `hf auth login` with access to the repo), then copy the folders back. Upload staging (hard links) is in `training/checkpoints/hf_backup/` (gitignored).
 - The trained checkpoint lives only on this machine at `training/checkpoints/final/` (gitignored, ~700 MB; since 2026-10-13 this is classifier v2 plus `calibration.json`; v1 is at `training/checkpoints/v1/final/`). Rebuilding v2 from a fresh clone: `training/prepare_dataset_v2.py`, then `train_classifier.py --data-dir training/data/v2 --output-dir training/checkpoints/v2`, then `calibrate.py`. A fresh clone must re-run `training/prepare_dataset.py` + `training/train_classifier.py` (~40-45 min on the RTX 3050) before the gateway can start, since the lifespan hook loads it at startup. The Docker image doesn't include it yet — mounting it / setting `THREAT_MODEL_DIR` is module 10's job.

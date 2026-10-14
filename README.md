@@ -75,14 +75,21 @@ pytest
 ruff check .
 ```
 
-The real-Postgres audit-log tests (`tests/test_audit_postgres.py`) are skipped
-unless a Postgres server is given; each one creates and drops its own scratch
-database:
+The real-Postgres audit-log tests and the Postgres + Redis variants of the
+cross-cutting tests are skipped unless a Postgres server and a Redis database
+are given. Each test creates and drops its own scratch database; the Redis
+database is flushed, so use one nothing else uses (15 here):
 
 ```bash
-docker compose up -d postgres
-TEST_POSTGRES_DSN=postgresql://postgres:postgres@localhost:5432/postgres pytest tests/test_audit_postgres.py
+docker compose up -d postgres redis
+TEST_POSTGRES_DSN=postgresql://postgres:postgres@localhost:5432/postgres \
+TEST_REDIS_URL=redis://localhost:6379/15 pytest -rs --cov
 ```
+
+`tests/test_full_pipeline.py` needs the trained classifier at
+`training/checkpoints/final/` and is skipped without it. The full testing
+strategy, what each layer proves, the coverage review and what is deliberately
+not tested are in [docs/TESTING.md](docs/TESTING.md).
 
 ## Audit log (module 7)
 

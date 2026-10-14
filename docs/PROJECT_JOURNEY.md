@@ -471,6 +471,55 @@ and controls everything the gateway does. It's what faculty will click through.
 - *How do you know the dashboard works?* 45 component tests, 16 browser
   tests against the real Docker stack, and both demo flows done live.
 
+### Module 9 — Testing strategy — 2026-10-14
+
+**Goal:** each module already tested its own part. Module 9 tests what falls
+*between* them: does the gateway still work, and still keep its security
+rules, once every piece is wired together? Chinmay asked for it to be done
+honestly, so every new test was also run against the old code to prove it
+catches what it claims to.
+
+**What was built, why, and how:**
+
+| # | What | Why | How | Proof | Commit |
+|---|---|---|---|---|---|
+| 1 | **Full-journey tests** (`test_full_pipeline.py`) | Every other test fakes the classifier and freezes the session agent; nothing checked all modules together | One request through every *real* stage - trained model, Presidio, bandit, session agent, Redis budgets, audit chain - with only the AI provider mocked. Seven tests: benign, attack, PII, over budget, fail-closed, fail-open, attack inside a tool call. Each runs twice: SQLite + fake Redis, and real Postgres + Redis | 14/14 pass | `04ccd4d` |
+| 2 | **Security-rule tests** (`test_security_boundaries.py`) | The rules "no raw PII anywhere" and "keys never exposed" must hold whichever module wrote the data | Plant an email, phone, card, SSN and fake keys; send every kind of request; then search every table, every Redis key, every log line at DEBUG, every chat and admin response (admin endpoints read from the OpenAPI schema, so new ones are included automatically) and what went upstream | 8/8 pass | `04ccd4d` |
+| 3 | **Fix: personal data in the logs** | Test 2 found Presidio's own logger writing the analysed text at DEBUG (and at ERROR for IBANs). `LOG_LEVEL=DEBUG` would have put raw PII in the gateway's logs | Presidio's loggers are silenced; its failures still arrive as exceptions, already wrapped without text | Test fails on the old code, passes now | `04ccd4d` |
+| 4 | **Fix: provider error text reached clients** | Test 2 planted a key in a provider error and it came back in the 502 reply. The same path could reveal internal addresses (the Ollama URL) | Clients now get the gateway's own short description: `provider returned HTTP 401`, `provider timed out`, `provider unreachable (ConnectError)` | Test fails on the old code, passes now | `04ccd4d` |
+| 5 | **Fix: tool calls skipped every check** | A probe put an email in nine different places in a request. Text inside an assistant's tool-call arguments reached the provider unredacted, unscored and unscanned | Redaction, threat scoring, the reply scan and the bandit's cut-and-allow step now all read tool-call arguments | Probe re-run: redacted. New tests fail on the old code | `04ccd4d` |
+| 6 | **The first version of fix 5 was wrong** | Testing it with the real model showed harmless tool-call JSON scores as an attack: `{"query": "onboarding guide..."}` 0.979, while the value alone scores 0.031. It would have blocked most tool-using apps | The classifier now scores only the text values inside the JSON. Arguments are never cut (that would break their JSON), but if they still look like an attack the request is blocked | Real-model test with a harmless control: the control passes, the attack is refused | `04ccd4d` |
+| 7 | **Coverage report** | Plan §4: measure it and review it once | `pytest --cov` with branch coverage: 97% of `app/`. The gaps that mattered were then tested: failures *after* the provider answered (the unchecked reply must not be returned), startup/shutdown, an old-feature-layout guard, Ollama errors | `chat.py`, `main.py`, `messages.py` now 100% | `04ccd4d` |
+| 8 | **CI** | Plan §5 | Every push: Postgres + Redis services so the new tests run on both backends, coverage printed, every skip listed with its reason. New "Full checks" workflow (push to main, weekly, on demand): downloads the model from the private Hugging Face backup, runs the real-model tests (fails if any skip), the classifier and bandit evaluations, and the 16 browser tests against a freshly built Docker stack | Evaluation commands run locally: classifier macro-F1 0.908 and 3.1% false alarms, matching the shipped result | `04ccd4d` |
+
+**Honest findings and limits:**
+- Five request fields are still passed through unchecked: a message's
+  `name`, `user`, tool *definitions*, `response_format` schemas and unknown
+  fields (L9-1). A probe confirmed it.
+- Code-like tool arguments (SQL) still score as attacks, 0.976 (L9-2), the
+  same weakness as L5-2.
+- L5-2 reproduces with the shipped model in a fresh process: "hello" 0.805,
+  "No results." 0.903. One new test first passed *because* of this (a
+  two-word tool reply scored as an attack on its own) and was rebuilt with a
+  harmless control.
+- The "Full checks" workflow needs a Hugging Face read token as the GitHub
+  secret `HF_TOKEN`; without it, it fails loudly instead of skipping (L9-3).
+- Not tested, on purpose: load testing (L9-4), the red-team stretch goal that
+  wasn't built (L9-5), multi-server failover (L9-6), a real paid provider
+  (L9-7).
+
+**Viva lines:**
+- *How do you know it's secure, not just tested?* The security tests don't
+  check one module's output; they search everything the gateway wrote for
+  planted values, including logs at DEBUG. They found two real leaks that
+  every per-module test had missed.
+- *How do you know your tests work?* Each new test was run against the old
+  code first and failed there. One test that passed for the wrong reason was
+  caught that way and rebuilt.
+- *What's your coverage?* 97% of lines and branches, reviewed file by file.
+  But coverage only says what ran, which is why the tests were also checked
+  against broken code.
+
 ## 5. Lessons that cut across modules
 
 1. **Verify live, not just with tests.** Running the real Docker stack caught
@@ -492,6 +541,9 @@ and controls everything the gateway does. It's what faculty will click through.
    turned out to be idle (`ClientRead`), an A/B showed the audit log cost
    nothing, and a profile named the real cause (a module 2 HTTPS client per
    request). Each step ruled one thing out before the next guess.
+9. **A test must fail on broken code.** Module 9 ran every new test against
+   the old code first. One passed anyway (a short harmless reply scored as an
+   attack on its own), so it proved nothing until it got a control case.
 
 ## 6. Interview / viva cheat sheet
 
@@ -523,15 +575,18 @@ and controls everything the gateway does. It's what faculty will click through.
   `head_hash` (L7-2).
 - **Doesn't logging slow every request down?** No: the request only queues the
   entry. Measured A/B on Postgres: no meaningful difference.
+- **How did you test the whole system, not just the parts?** Seven
+  full-journey tests run one request through every real stage, on SQLite
+  and on real Postgres + Redis, and four security tests search every table,
+  Redis key, log line and response for planted PII and keys. They found two
+  leaks and a whole request field (tool calls) that skipped every check.
 - **What would you improve?** Re-fit the bandit's bands to calibrated
   scores, a larger validation set for the RL lockout constraint, admin roles and session revocation (L8-1, L8-2), real session logs to replace the
   simulator (L6b-3).
 
 ## 7. What's next
 
-1. Module 9: testing strategy (a seeded throwaway database for browser tests,
-   a load test now that the gateway is ~3x faster, profiling the remaining
-   ~9 requests/second limit).
+1. Add the `HF_TOKEN` secret so the "Full checks" workflow can run (L9-3).
 2. Module 10: deployment (fresh demo database, a gateway database user that
    can't disable the audit trigger, L7-6).
 3. (Optional) Pre-registered re-fit of 6a's band edges to v2's scores (L6a-30).
@@ -550,3 +605,4 @@ and controls everything the gateway does. It's what faculty will click through.
 - 2026-10-14 (later): optional Ollama provider and the first real end-to-end run.
 - 2026-10-14 (evening): streaming rejected up front (L2-3).
 - 2026-10-14 (night): module 8, admin dashboard.
+- 2026-10-14 (later): module 9 section, lesson 9, a testing viva answer; "What's next" updated.
