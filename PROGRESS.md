@@ -461,6 +461,7 @@
      - `ruff format` isn't enforced in this repo, so the new files match the existing style, not the formatter.
 - **`LIMITATIONS.md` is the living register of known limitations.** Add entries when a module ships with one; when something in an entry's "Unblocked by" column becomes available, revisit it; mark fixed ones `Resolved` (don't delete them).
 - **Next up: Module 10 (deployment).** Module 9 is done.
+  - **Module 9 is committed locally but NOT pushed** (`04ccd4d`, `de738fa` and this note). Chinmay chose on 2026-10-14 to push later, together with the `HF_TOKEN` setup below, when he asks. When he does: walk him through creating the token and adding the secret, push, wait for both workflows, and record the runs here (separate commit).
   - **Chinmay must add the GitHub secret `HF_TOKEN`** (a *read* token for the private repo `Chinmayyyyy/genai-gateway-classifier`): GitHub -> repo Settings -> Secrets and variables -> Actions -> New repository secret. Until then the "Full checks" workflow fails on every push to `main`, by design (L9-3). Then re-run it from the Actions tab and record the result here.
   - Module 10 should seed demo data into a fresh database: the dev log holds 145+ permanent entries, mostly the morning's load-test failures.
   - Candidates left from module 9's notes: a load test (L9-4); profiling the ~9 req/s ceiling (likely CPU inference); closing L9-1 (decide whether to refuse unknown request fields).
