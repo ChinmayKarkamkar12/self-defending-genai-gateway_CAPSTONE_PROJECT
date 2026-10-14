@@ -18,7 +18,7 @@ from decimal import Decimal
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import Select, select
@@ -93,6 +93,9 @@ def _filtered(
     action: str | None,
     outcome: AuditOutcome | None,
 ) -> Select:
+    if from_ is not None and to is not None and from_ > to:
+        # Otherwise a swapped range silently looks like "no entries".
+        raise HTTPException(status_code=422, detail="'from' must not be later than 'to'")
     stmt = select(AuditLogEntry)
     if team_id is not None:
         stmt = stmt.where(AuditLogEntry.team_id == team_id)

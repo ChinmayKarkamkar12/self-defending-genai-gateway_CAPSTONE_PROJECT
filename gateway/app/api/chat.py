@@ -70,7 +70,9 @@ async def _release_budget_reservation(ctx: RequestContext) -> None:
     period = ctx.metadata.get("budget_period")
     if period is None:
         return
-    reservation = ctx.metadata.get("budget_reservation", Decimal("0"))
+    # Popped (like usage_recorder does) so the reservation can't be refunded twice.
+    ctx.metadata.pop("budget_period", None)
+    reservation = ctx.metadata.pop("budget_reservation", Decimal("0"))
     try:
         await release_reservation(ctx.metadata["redis"], ctx.team_id, period, reservation)
     except Exception:  # noqa: BLE001 - best-effort refund, must not mask the real error
@@ -182,6 +184,8 @@ async def chat_completions(
         raise
     except Exception:
         _mark(ctx, AuditOutcome.INTERNAL_ERROR)
+        # No-op if the reservation was already refunded or reconciled.
+        await _release_budget_reservation(ctx)
         await _audit_refused_request(ctx, 500)
         raise
 

@@ -10,11 +10,12 @@ permanently overstate what was actually spent.
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import pytest
 import respx
 from httpx import Response
 
 from app.core.context import StageResult
-from app.core.providers.openai import OPENAI_BASE_URL
+from app.core.providers.openai import OPENAI_BASE_URL, OpenAIProvider
 from app.core.stages.budget_check import budget_check_stage
 from app.db.models import BudgetPeriod, BudgetPolicy
 from tests.conftest import RAW_TEST_KEY
@@ -189,5 +190,50 @@ async def test_reservation_refunded_when_usage_recording_stage_fails(
     )
 
     assert response.status_code == 503
+    spend = await fake_redis.get(f"budget:{team.id}:{_today_key()}")
+    assert spend is None or Decimal(spend) == Decimal("0")
+
+
+@respx.mock
+async def test_reservation_refunded_on_non_json_upstream_body(
+    client, db_session, fake_redis, seeded_team_and_key
+):
+    team, _ = seeded_team_and_key
+    await _add_policy(db_session, team)
+    respx.post(f"{OPENAI_BASE_URL}/chat/completions").mock(
+        return_value=Response(200, text="<html>not json</html>")
+    )
+
+    response = await client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {RAW_TEST_KEY}"},
+        json={"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    assert response.status_code == 502
+    spend = await fake_redis.get(f"budget:{team.id}:{_today_key()}")
+    assert spend is None or Decimal(spend) == Decimal("0")
+
+
+async def test_reservation_refunded_on_unexpected_error(
+    client, db_session, fake_redis, seeded_team_and_key, monkeypatch
+):
+    """An exception nothing classified (-> 500) must not strand the
+    reservation either."""
+    team, _ = seeded_team_and_key
+    await _add_policy(db_session, team)
+
+    async def exploding_call(self, payload):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(OpenAIProvider, "chat_completion", exploding_call)
+
+    with pytest.raises(RuntimeError):
+        await client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": f"Bearer {RAW_TEST_KEY}"},
+            json={"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]},
+        )
+
     spend = await fake_redis.get(f"budget:{team.id}:{_today_key()}")
     assert spend is None or Decimal(spend) == Decimal("0")

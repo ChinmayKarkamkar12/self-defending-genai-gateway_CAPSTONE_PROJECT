@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 
 from app.config import settings
-from app.core.providers.base import UpstreamProviderError
+from app.core.providers.base import UpstreamClient, UpstreamProviderError
 
 ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1"
 ANTHROPIC_VERSION = "2023-06-01"
@@ -51,9 +51,12 @@ def _to_openai_response(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 class AnthropicProvider:
+    def __init__(self) -> None:
+        self.http = UpstreamClient(ANTHROPIC_BASE_URL)
+
     async def chat_completion(self, payload: dict[str, Any]) -> dict[str, Any]:
         try:
-            async with httpx.AsyncClient(base_url=ANTHROPIC_BASE_URL, timeout=60.0) as client:
+            async with self.http.client() as client:
                 response = await client.post(
                     "/messages",
                     json=_to_anthropic_payload(payload),
@@ -66,3 +69,7 @@ class AnthropicProvider:
                 return _to_openai_response(response.json())
         except httpx.HTTPError as exc:
             raise UpstreamProviderError(str(exc)) from exc
+        except (ValueError, AttributeError, TypeError) as exc:
+            # A 2xx whose body isn't JSON, or isn't shaped like a Messages
+            # API response (`content` not a list of blocks).
+            raise UpstreamProviderError("response body is not a valid Messages response") from exc

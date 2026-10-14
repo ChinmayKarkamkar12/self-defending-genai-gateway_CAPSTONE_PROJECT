@@ -150,3 +150,12 @@ async def test_csv_export_neutralizes_formulas(client, session_maker, seeded_tea
 async def test_export_rejects_unknown_format(client):
     response = await client.get("/v1/admin/logs/export", params={"format": "xlsx"})
     assert response.status_code == 422
+
+
+async def test_reversed_date_range_is_rejected(client):
+    # A swapped range must be an error, not an empty result that looks
+    # like "nothing happened".
+    params = {"from": "2026-10-02T00:00:00Z", "to": "2026-10-01T00:00:00Z"}
+    for path in ("/v1/admin/logs", "/v1/admin/logs/export"):
+        response = await client.get(path, params=params)
+        assert response.status_code == 422, path

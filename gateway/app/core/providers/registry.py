@@ -21,3 +21,14 @@ def get_provider(model: str) -> Provider:
         if model.startswith(prefix):
             return provider
     raise UnknownModelError(f"no provider registered for model '{model}'")
+
+
+def open_upstream_clients() -> None:
+    """Called once from the app lifespan: one pooled client per provider."""
+    _OPENAI.http.open()
+    _ANTHROPIC.http.open()
+
+
+async def close_upstream_clients() -> None:
+    await _OPENAI.http.aclose()
+    await _ANTHROPIC.http.aclose()

@@ -2,6 +2,7 @@
 gateway, with what each module decided about it."""
 from decimal import Decimal
 
+import pytest
 import respx
 from httpx import Response
 
@@ -11,7 +12,7 @@ from app.core.audit.entry import NOT_EVALUATED, UNRECOGNIZED_MODEL
 from app.core.audit.verify import verify_chain
 from app.core.context import RequestContext, StageResult
 from app.core.defense.session import lock_key
-from app.core.providers.openai import OPENAI_BASE_URL
+from app.core.providers.openai import OPENAI_BASE_URL, OpenAIProvider
 from app.core.threat.classifier import ThreatScore, set_threat_classifier
 from app.db.models import AuditOutcome, BudgetPeriod, BudgetPolicy
 from tests.audit_helpers import AUTH, all_entries, chat_body, mock_openai
@@ -142,6 +143,45 @@ async def test_upstream_error(client, audit_writer, session_maker):
 
     assert response.status_code == 502
     assert entry.outcome == AuditOutcome.UPSTREAM_ERROR
+
+
+@respx.mock
+async def test_upstream_non_json_body(client, audit_writer, session_maker):
+    # A 200 whose body isn't JSON (e.g. a proxy's HTML page) is an upstream
+    # error (502), not an unhandled exception.
+    respx.post(f"{OPENAI_BASE_URL}/chat/completions").mock(
+        return_value=Response(200, text="<html>bad gateway</html>")
+    )
+
+    response, entry = await _send(client, audit_writer, session_maker, chat_body())
+
+    assert response.status_code == 502
+    assert entry.outcome == AuditOutcome.UPSTREAM_ERROR
+
+
+async def test_unexpected_error_is_audited(client, audit_writer, session_maker, monkeypatch):
+    """The last-resort exit path: an exception nothing upstream classified.
+    The client gets a 500, and the request still gets an audit entry."""
+
+    async def exploding_call(self, payload):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(OpenAIProvider, "chat_completion", exploding_call)
+
+    # ASGITransport re-raises the app's unhandled exception into the test.
+    with pytest.raises(RuntimeError):
+        await client.post("/v1/chat/completions", headers=AUTH, json=chat_body())
+    await audit_writer.flush()
+
+    (entry,) = await all_entries(session_maker)
+    assert entry.outcome == AuditOutcome.INTERNAL_ERROR
+    assert entry.http_status == 500
+    assert (await verify_chain_valid(session_maker)) is True
+
+
+async def verify_chain_valid(session_maker) -> bool:
+    async with session_maker() as session:
+        return (await verify_chain(session)).valid
 
 
 async def test_failing_stage(client, audit_writer, session_maker, monkeypatch):

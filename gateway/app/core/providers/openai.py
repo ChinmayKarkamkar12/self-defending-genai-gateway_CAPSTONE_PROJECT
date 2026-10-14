@@ -4,15 +4,18 @@ from typing import Any
 import httpx
 
 from app.config import settings
-from app.core.providers.base import UpstreamProviderError
+from app.core.providers.base import UpstreamClient, UpstreamProviderError
 
 OPENAI_BASE_URL = "https://api.openai.com/v1"
 
 
 class OpenAIProvider:
+    def __init__(self) -> None:
+        self.http = UpstreamClient(OPENAI_BASE_URL)
+
     async def chat_completion(self, payload: dict[str, Any]) -> dict[str, Any]:
         try:
-            async with httpx.AsyncClient(base_url=OPENAI_BASE_URL, timeout=60.0) as client:
+            async with self.http.client() as client:
                 response = await client.post(
                     "/chat/completions",
                     json=payload,
@@ -22,3 +25,6 @@ class OpenAIProvider:
                 return response.json()
         except httpx.HTTPError as exc:
             raise UpstreamProviderError(str(exc)) from exc
+        except ValueError as exc:
+            # A 2xx whose body isn't JSON (e.g. a proxy's HTML error page).
+            raise UpstreamProviderError("response body is not valid JSON") from exc
