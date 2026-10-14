@@ -520,6 +520,59 @@ catches what it claims to.
   But coverage only says what ran, which is why the tests were also checked
   against broken code.
 
+### Module 10 — Deployment — 2026-10-14
+
+**Goal:** a demo that starts with one command, fills itself with realistic
+data, can be reset to a clean state before the presentation, and runs the
+same way on a machine that has never seen the project.
+
+**What was built, why, and how:**
+
+| # | What | Why | How | Proof | Commit |
+|---|---|---|---|---|---|
+| 1 | **Self-starting stack** | Before, starting meant `up`, then `alembic upgrade`, then a seed script, then creating an admin - easy to get wrong at 2 am | Compose runs one-off jobs in order: `model` (is the classifier there?), `migrate` (database setup), then the gateway (with a health check), then the dashboard and the demo traffic | A fresh clone came up and seeded itself in 81-90 s | `8dbcdbc` |
+| 2 | **A restricted database login for the gateway (L7-6)** | The gateway used the database superuser, so anyone with its password could switch off the audit log's protection | `migrate` (the owner) creates `gateway_app`: may read/write the app tables, may only *add* audit entries, owns nothing. The owner password lives only in the one-off job | Tests: 8 dangerous commands refused as `gateway_app`; a full request + review + admin round trip still works. Live: the tamper trick from inside the gateway fails with *permission denied* | `8dbcdbc` |
+| 3 | **Demo data** (`seed_demo.py`) | An empty dashboard demos nothing | Four teams (Acme Support, Research Lab with a tiny budget, Legal Ops with tokenizing, Red Team Sandbox for attacks), keys, policies, an admin, then **real requests through the gateway** - nothing is written into the audit log directly. Keys are derived from a secret in `.env`, never stored | Seeded twice: no duplicates. Review queue opens with 2 genuine borderline items | `8dbcdbc`, `451e8d1` |
+| 4 | **Reset script** (`reset_demo.ps1` / `.sh`) | A clean slate before the presentation, and the "copy `.env.example`" step done right | Creates or completes `.env` with generated secrets (never overwriting existing values), asks before wiping, rebuilds, waits for the seed, prints the login | Run from no `.env` twice | `8dbcdbc` |
+| 5 | **Demo helper + `docs/DEMO_SCRIPT.md`** | Typing curl with quotes on Windows during a live demo is how demos fail | `docker compose exec gateway python -m scripts.demo pii` (benign, pii, attack, budget, keys): each prints the reply and the audit entry. The PII step searches every table for the raw values on screen | Full dry runs in the documented order; dashboard paths checked against screenshots | `2357325` |
+| 6 | **402 / 429** | A spent budget and a rate limit were both "422 blocked", like an attack | 402 Payment Required for a budget (retrying won't help), 429 for a rate limit (OpenAI's SDKs back off and retry on it) | Tests for both | `8dbcdbc` |
+| 7 | **A pretend price for the free local model** | With only Ollama, nothing costs money, so the budget step could never run out | Optional setting, 0 by default; the reset script sets 60 per million tokens; the demo script says it's pretend | Budget runs out after 4 answers: 402 | `8dbcdbc` |
+
+**What the clean-clone test caught** (a fresh copy from git in a temporary
+folder, like a faculty laptop):
+- the four services built the same image name in parallel and collided;
+- without the model, the start failed with a bare "didn't complete", not the
+  reason (now the jobs' messages are printed);
+- the generated admin password was only shown at the very end, so a failed
+  first start lost it;
+- the bash script would have had Windows line endings on a Windows checkout;
+- the "unknown model" demo request said "hello there", which the classifier
+  blocked as an attack first (L5-2) - so it never showed what it was for.
+
+Also done live for the first time: the dashboard's **Unlock key** button
+(module 8 had only tested it automatically).
+
+**Honest limits:**
+- A machine without the model needs the folder copied or a Hugging Face
+  token (L10-1).
+- The Postgres owner password is the default, and Redis has none - both
+  only listen on the laptop itself now (L10-2, L10-3).
+- The demo's spend is pretend money (L10-4).
+- No Kubernetes, TLS or secret manager - documented as future work (L10-5).
+
+**Viva lines:**
+- *Why a separate database user?* The hash chain *detects* tampering; the
+  restricted role *prevents* the easy kind. The gateway can add audit
+  entries but can't change or delete them, or switch the protection off -
+  even if someone takes over the gateway process.
+- *Is the demo data fake?* The teams and budgets are demo settings, but
+  every audit entry, review item and refusal is a real decision by the
+  real pipeline - the seed sends requests through the gateway like any app.
+- *How would this scale to production?* The stateless gateway scales
+  horizontally behind a load balancer (the audit writer already serialises
+  across processes with an advisory lock); add TLS, a secret manager,
+  passwords on Postgres and Redis, and Kubernetes for orchestration.
+
 ## 5. Lessons that cut across modules
 
 1. **Verify live, not just with tests.** Running the real Docker stack caught
@@ -580,16 +633,19 @@ catches what it claims to.
   and on real Postgres + Redis, and four security tests search every table,
   Redis key, log line and response for planted PII and keys. They found two
   leaks and a whole request field (tool calls) that skipped every check.
+- **What happens if your laptop dies before the demo?** Any machine with
+  Docker: clone, copy the model folder (or set a Hugging Face token), run
+  the reset script. Tested from a fresh clone: up and seeded in ~1.5 min.
 - **What would you improve?** Re-fit the bandit's bands to calibrated
   scores, a larger validation set for the RL lockout constraint, admin roles and session revocation (L8-1, L8-2), real session logs to replace the
   simulator (L6b-3).
 
 ## 7. What's next
 
-1. Add the `HF_TOKEN` secret so the "Full checks" workflow can run (L9-3).
-2. Module 10: deployment (fresh demo database, a gateway database user that
-   can't disable the audit trigger, L7-6).
-3. (Optional) Pre-registered re-fit of 6a's band edges to v2's scores (L6a-30).
+1. Add the `HF_TOKEN` secret, then push modules 9 and 10 (L9-3).
+2. Rehearse `docs/DEMO_SCRIPT.md` twice on the presenting laptop.
+3. Module 11 is a reference roadmap: nothing to build.
+4. (Optional) Pre-registered re-fit of 6a's band edges to v2's scores (L6a-30).
 
 ---
 
@@ -606,3 +662,4 @@ catches what it claims to.
 - 2026-10-14 (evening): streaming rejected up front (L2-3).
 - 2026-10-14 (night): module 8, admin dashboard.
 - 2026-10-14 (later): module 9 section, lesson 9, a testing viva answer; "What's next" updated.
+- 2026-10-14 (later still): module 10 section, a deployment viva answer; "What's next" updated.

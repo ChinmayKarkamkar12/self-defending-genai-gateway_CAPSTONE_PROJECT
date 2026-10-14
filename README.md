@@ -8,7 +8,13 @@ admin dashboard.
 See [`project_plan/`](project_plan/00-INDEX.md) for the full module-by-module
 build plan.
 
-## Quick start (5 minutes)
+## Quick start
+
+Needs Docker Desktop, and the trained classifier at
+`training/checkpoints/final/` (it isn't in git: copy the folder over, or put a
+Hugging Face read token in `.env` as `HF_TOKEN` and it downloads on first
+start). For models to actually answer without a paid key, run
+[Ollama](https://ollama.com) with `ollama pull llama3`.
 
 1. **Clone the repo**
 
@@ -17,42 +23,46 @@ build plan.
    cd self-defending-genai-gateway_CAPSTONE_PROJECT
    ```
 
-2. **Configure environment**
+2. **Start everything, seeded with demo data**
 
-   ```bash
-   cp .env.example .env
-   # then edit .env and fill in OPENAI_API_KEY / ANTHROPIC_API_KEY etc.
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts\reset_demo.ps1   # Windows
+   ./scripts/reset_demo.sh                                           # macOS / Linux
    ```
 
-3. **Start the gateway and the dashboard**
+   It creates `.env` from `.env.example` with every secret generated, then
+   builds and starts the stack: Postgres, Redis, the gateway and the
+   dashboard. Database setup, the gateway's restricted database role, demo
+   teams and keys, a dashboard admin and some real traffic all happen on
+   their own. It prints the dashboard login when it's ready (~1.5 minutes).
+   Run it again any time for a clean slate - it asks before deleting data.
 
-   ```bash
-   docker compose up -d --build
-   docker compose exec gateway alembic upgrade head
-   ```
+   Without the script: `cp .env.example .env`, fill in the empty secrets it
+   lists, then `docker compose up -d --build`.
 
-4. **Check it's alive**
+3. **Use it**
 
-   ```bash
-   curl http://localhost:8000/health
-   # -> {"status": "ok"}
-   ```
+   - Dashboard: http://localhost:3000
+   - Gateway: http://localhost:8000 (`curl http://localhost:8000/health`)
+   - The live demo, step by step: [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md)
+   - Demo API keys, for your own requests:
+     `docker compose exec gateway python -m scripts.demo keys`
 
-5. **Create an admin and open the dashboard**
-
-   ```bash
-   docker compose exec gateway python -m scripts.create_admin <your-name>
-   # asks for a password twice (12+ characters)
-   ```
-
-   Then open http://localhost:3000 and sign in.
+**How it starts** (`docker-compose.yml`): `model` checks the classifier is in
+place (downloading it if needed), `migrate` applies migrations and creates
+the `gateway_app` role as the database owner, then the gateway starts with
+only that restricted login (it can't disable the audit log's protection),
+then the dashboard and the one-off demo traffic. Postgres and Redis listen
+on 127.0.0.1 only.
 
 ## Repo layout
 
 ```
-gateway/        FastAPI app (proxy, config, tests)
+gateway/        FastAPI app (proxy, config, tests, scripts)
 dashboard/      admin dashboard (Next.js, module 8)
 project_plan/   module-by-module implementation plan
+scripts/        reset_demo.ps1 / reset_demo.sh (module 10)
+docs/           testing strategy, demo script, project journey, ADRs
 docker-compose.yml
 .env.example
 ```

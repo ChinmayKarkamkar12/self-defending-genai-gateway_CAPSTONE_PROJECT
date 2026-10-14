@@ -9,17 +9,18 @@ for module 9 (`project_plan/09-testing-strategy.md`); numbers are from
 
 | Layer | Where | Count | Runs |
 |---|---|---|---|
-| Gateway unit + integration (per module) | `gateway/tests/test_*.py` | 437 tests | every push |
+| Gateway unit + integration (per module) | `gateway/tests/test_*.py` | 455 tests | every push |
 | Full pipeline, every real stage | `gateway/tests/test_full_pipeline.py` | 7 tests × 2 backends | "Full checks" (needs the trained model) |
 | Security boundaries, across all modules | `gateway/tests/test_security_boundaries.py` | 4 tests × 2 backends | every push |
 | Dashboard unit + component | `dashboard/src/**/*.test.ts(x)` | 45 tests | every push |
 | Dashboard browser (E2E) | `dashboard/e2e/*.spec.ts` | 16 tests | "Full checks", against the Docker stack |
 | Offline model evaluations | `training/evaluate.py`, `training/evaluate_bandit.py` | 2 reports | "Full checks", weekly |
 
-The 437 includes both backend variants of the two cross-cutting files, and
+The 455 (437 at the end of module 9; module 10 added the deployment
+tests) include both backend variants of the two cross-cutting files, and
 the real-model tests (`test_full_pipeline.py`, `test_classifier.py`), which
 skip without the checkpoint. On this machine, with the checkpoint, Postgres
-and Redis, all 437 pass and none skip.
+and Redis, all 455 pass and none skip.
 
 ## The two backends
 
@@ -166,10 +167,12 @@ and on demand:**
   classifier evaluation reproduces the shipped result (macro-F1 0.908, benign
   false-positive rate 3.1%), and the bandit evaluation is identical run to
   run.
-- **e2e**: builds the Docker stack on a fresh database, sends a benign, an
-  attack and an unknown-model request (no real provider key: all three are
-  refused or fail upstream, and all are audited), creates a throwaway admin,
-  and runs the 16 Playwright tests.
+- **e2e**: starts the stack exactly as for a demo (`scripts/reset_demo.sh`,
+  module 10): the `model` job downloads the classifier, the database sets
+  itself up, and the demo traffic is sent through the real pipeline (no
+  Ollama there, so answers fail upstream and are audited like the rest).
+  Then the 16 Playwright tests run with a throwaway admin whose password is
+  masked in the log.
 
 Both jobs need the repository secret `HF_TOKEN` (a read token for
 `Chinmayyyyy/genai-gateway-classifier`). Without it they fail with a message
