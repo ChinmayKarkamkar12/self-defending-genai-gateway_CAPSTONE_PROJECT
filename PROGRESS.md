@@ -363,24 +363,55 @@
     - **For module 8:** the dashboard's outcome filter and colours need this 12th value. **For module 11:** "buffer-then-scan streaming" is a candidate roadmap item.
   - **Pushed to `origin/main` on 2026-10-14** (`18eadc2`, `13306ed`, `b14ad63`, `9486c01`, `b0c4e47`; no Claude co-author trailer). GitHub Actions on `b0c4e47`: **success** (https://github.com/ChinmayKarkamkar12/self-defending-genai-gateway_CAPSTONE_PROJECT/actions/runs/38522609904). The real-Postgres tests are skipped in CI (no `TEST_POSTGRES_DSN`); they were run locally (368/368). The what/why/how of every 2026-10-14 change is in `docs/PROJECT_JOURNEY.md`, section "Changes made after module 7".
 
-## In progress
-- [ ] **Module 8: Admin dashboard** (started 2026-10-14).
+- [x] Module 8: Admin dashboard. Completed 2026-10-14, on `main` (commits `ae68574`, `6af74a2`, `4291bab`).
   - **Decisions by Chinmay:**
-    - **Design:** "checkpoint, not a dashboard". Chinmay explicitly does not want it to look AI-generated or templated.
-      - The overview opens with the route through the checkpoint (requests stopped at each stage).
-      - Fonts: Barlow Semi Condensed (headings and numbers, highway-signage roots) + Atkinson Hyperlegible (body).
-      - Cool pale grey base, ink-blue text. Four decision colours: allowed teal `#2F7D6B`, cleaned ochre `#B7862B`, held indigo `#5B4BB7`, refused crimson `#A6243A`; failed is neutral.
-      - Each screen gets a shape that fits its content (ledger for the audit log, one-at-a-time decision desk for the review queue, gauge bars for budgets). No identical card grid, gradients, glass, emoji or all-caps labels.
-    - **Login:** username + password (not a single admin key).
-  - **Done - gateway side (`ae68574`):**
-    - Admin login: migration 0009 `admin_users`; scrypt hashes; Redis sessions storing only the token's hash, 8 h TTL; lockout after 5 failures for 15 min; `scripts/create_admin.py`.
-    - Every `/v1/admin` router requires an admin (wired once in `main.py`; a test walks all 22 endpoints). Closes L3-1, L6a-4, L7-7.
-    - Review verdicts are recorded under the logged-in admin; the `reviewer` body field is gone.
-    - `GET /v1/admin/teams`, `/v1/admin/stats/{overview,timeline,spend}`.
-    - **Tests:** 390/390 with Postgres.
-    - **Live:** 0009 applied; admin `chinmay` created; login/me/overview/verify/logout all checked.
-  - **Next:** scaffold `dashboard/` (Next.js App Router + TS + Tailwind + Recharts). The browser never sees the session token: Next.js route handlers keep it in an httpOnly cookie and proxy to the gateway.
-  - **Node.js:** `winget install OpenJS.NodeJS.LTS` (v24) was started and is waiting for Chinmay's admin prompt.
+    - **Design:** "checkpoint, not a dashboard". He explicitly did not want it to look AI-generated or templated.
+      - Barlow Semi Condensed (headings and figures, highway-signage roots) + Atkinson Hyperlegible Next (body).
+      - Cool grey ground, ink-blue text. Four decision colours used identically everywhere: allowed teal, cleaned ochre, held indigo, refused crimson; failed is slate.
+      - Centrepiece: the **route map** on the overview, a traffic band that narrows at each check as stopped requests peel off. On phones it becomes a list.
+    - **Login:** username + password, not a single admin key.
+  - **Gateway side:**
+    - `admin_users` (migration 0009); scrypt hashes; `scripts/create_admin.py`.
+    - Redis sessions storing only the token's SHA-256, 8 h TTL; lockout after 5 failures for 15 min; Redis down -> 503.
+    - `require_admin` is added once to every admin router in `main.py`; a test walks all admin endpoints from the OpenAPI schema. Closes L3-1, L6a-4, L7-7.
+    - Review verdicts record the logged-in admin; the `reviewer` body field was removed.
+    - New: `/v1/admin/teams`, `/v1/admin/stats/{overview,timeline,spend}`, `/v1/admin/redaction-entities`.
+    - Reviewed items are now listed newest-verdict-first; pending stays oldest-first.
+    - `tamper_demo --hold` pauses while tampered, for the live demo.
+  - **Dashboard** (`dashboard/`, Next.js 16.4, React 19.3, Tailwind 4, Recharts 3):
+    - The browser only talks to the dashboard: `api/auth/login|logout` keep the token in an httpOnly SameSite=Strict cookie; `api/gw/[...path]` forwards to `/v1/admin` (safe path segments, same-origin check on writes).
+    - `proxy.ts` (Next 16's renamed middleware) redirects visitors without a session to `/login`.
+    - Six screens: overview, review queue (decision desk, A/S keys, amend), audit log (ledger, filters with whole-day date ranges, details, CSV, integrity check), threats (actions, learning curve, sessions with risk trend and unlock), cost (budget gauge and form, spend by model), personal data (entity checklist, mask/tokenize).
+    - Next 16 notes: `cacheComponents` is on, so pages are static shells that load data client-side. Node 24 was installed by winget to `E:\.vscode\` (it's on PATH). Vitest needs `pool: "threads"` on Windows. MSW v3 renamed `onUnhandledRequest` to `onUnhandledFrame`.
+  - **Tests:**
+    - Gateway **392/392** with Postgres (22 new for auth/stats, plus ordering); ruff clean.
+    - Dashboard **45/45** Vitest unit/component tests (MSW; unmocked requests fail) and **16/16** Playwright E2E against `docker compose up`. ESLint and `tsc` clean; production build passes.
+    - Every new bug-catching test was checked to fail on the old code.
+  - **Bugs found by testing and fixed:**
+    1. The same-origin check compared against the server's own `0.0.0.0` address, so nobody could log in through the Docker dashboard.
+    2. The PII "saved" notice vanished on remount.
+    3. The route summary was wired as the SVG's name instead of its description.
+    4. "Recently decided" showed the oldest verdicts.
+    5. Secondary text was below WCAG AA contrast (darkened `#6b7a8d` -> `#5a697c`).
+    6. The CSV link caused a hydration mismatch.
+    7. The PII screen described tokenize mode as swapping tokens back into replies; it doesn't. Corrected.
+  - **Definition of done:**
+    - [x] Every screen works against the real gateway: all six were screenshotted on live data. Live through the dashboard: review decide (reviewer recorded as `chinmay`), integrity check, CSV export, budget save and PII policy save (on test team "Fix Verify Team").
+      - Unlock wasn't exercised live (no key was locked); it is covered by the gateway's and the dashboard's tests.
+    - [x] Both demo flows work live:
+      - Review: a real injection item marked as an attack, reward +0.50, 3 -> 2 waiting.
+      - Audit verify: `tamper_demo --postgres --hold` -> the dashboard showed "Tampered: entry #2 ... Its contents were changed after it was written" -> restored -> "Intact: all 145 entries check out".
+    - [x] Component and API client tests pass (45).
+    - [x] E2E against the full Docker stack passes (16).
+  - **Accessibility pass:**
+    - Contrast of every text/background pair is computed and passes WCAG AA.
+    - Skip link; every control on all six screens is labelled (an E2E test checks this).
+    - Keyboard decisions; visible focus ring; reduced motion respected.
+  - **LIMITATIONS:** L8-1 to L8-7 added (session revocation, single role, lockout as targeted DoS, Python-side aggregation, dev-only npm audit chain, intercepted review E2E, no auto-refresh).
+  - **CI** now also runs the dashboard (lint, types, tests, build) and gives the gateway job a real Postgres, so the 6 Postgres tests run there too.
+
+## In progress
+(none)
 
 ## Not started
 - [ ] Module 9: Testing strategy
@@ -407,7 +438,16 @@
      - The live `gateway` DB now holds 10 real audit entries that can never be deleted (trigger). That's fine for dev; use a fresh DB for demo seeding (module 10).
      - `ruff format` isn't enforced in this repo, so the new files match the existing style, not the formatter.
 - **`LIMITATIONS.md` is the living register of known limitations.** Add entries when a module ships with one; when something in an entry's "Unblocked by" column becomes available, revisit it; mark fixed ones `Resolved` (don't delete them).
-- **Next up: Module 8 (admin dashboard).** (`AuditOutcome` now has 12 values, including `rejected_streaming`.) Module 7 is done (see above). The dashboard's log viewer uses `GET /v1/admin/logs` (cursor pagination: pass `next_before_sequence` back as `before_sequence`; filters `team_id`, `from`, `to`, `action`, `outcome`), `GET /v1/admin/logs/verify` (returns `valid`, `first_broken_entry`, `first_broken_sequence`, `reason`, `entry_count`, `head_hash` - a superset of the plan's `{valid, first_broken_entry}`) and `GET /v1/admin/logs/export?format=csv`. Admin auth (L3-1, L6a-4, L7-7) is module 8's job. L2-2 is fixed (2026-10-14). **Dashboard note:** a date-only `to=2026-10-13` means midnight at the *start* of that day, so the log viewer's date picker should send the end of the day (or the next day's midnight) as `to`. `from` > `to` is a 422. Audit entries can never be deleted (trigger), so module 10 should seed demo data into a fresh database. Live demo: `docker compose exec gateway python -m scripts.tamper_demo --postgres`. Chinmay wants short learning sessions alongside: explain what was built and quiz him.
+- **Next up: Module 9 (testing strategy).** Module 8 is done.
+  - The dashboard runs at http://localhost:3000 under `docker compose up -d --build`.
+  - Admin `chinmay` exists in the dev database with a random password set during testing. **Chinmay must set his own:** `docker compose exec gateway python -m scripts.create_admin chinmay`.
+  - E2E needs `E2E_ADMIN_USER`/`E2E_ADMIN_PASSWORD` in the environment.
+  - Module 9 candidates:
+    - a disposable seeded test database for E2E (L8-6);
+    - a load test now that L2-2 is fixed;
+    - profiling the ~9 req/s ceiling (likely CPU inference).
+  - Module 10 should seed demo data into a fresh database: the dev log holds 145 permanent entries, mostly the morning's load-test failures.
+  - Chinmay still owes the module 7 quiz answers. Teach module 8 too (BFF + httpOnly cookie; why the route map; why the review E2E is intercepted).
 - Docker stack: run `docker compose up -d --build` (never plain `up -d` after changing code or requirements - if the build fails, plain `up` silently runs the old image), then `docker compose exec gateway alembic upgrade head` and `docker compose exec gateway python -m scripts.seed` (must be `-m`; `python scripts/seed.py` fails with `No module named 'app'`). The gateway won't start unless `training/checkpoints/final/` exists on the host.
 - **Backup (2026-10-13):** the shipped classifier v2 (with calibration.json), v1, all of `training/data/` (including the locked v2 test, SHA `21ce7fa0...`), the 15 RL v3 agents and the v1/v2/v3 test results are in the **private** Hugging Face repo `Chinmayyyyy/genai-gateway-classifier`. All 82 files were verified: sizes match, and sha256 matches for all 33 large files. Its README maps each folder to its path in this repo. To restore: `hf download Chinmayyyyy/genai-gateway-classifier --local-dir hf_restore` (needs `hf auth login` with access to the repo), then copy the folders back. Upload staging (hard links) is in `training/checkpoints/hf_backup/` (gitignored).
 - The trained checkpoint lives only on this machine at `training/checkpoints/final/` (gitignored, ~700 MB; since 2026-10-13 this is classifier v2 plus `calibration.json`; v1 is at `training/checkpoints/v1/final/`). Rebuilding v2 from a fresh clone: `training/prepare_dataset_v2.py`, then `train_classifier.py --data-dir training/data/v2 --output-dir training/checkpoints/v2`, then `calibrate.py`. A fresh clone must re-run `training/prepare_dataset.py` + `training/train_classifier.py` (~40-45 min on the RTX 3050) before the gateway can start, since the lifespan hook loads it at startup. The Docker image doesn't include it yet — mounting it / setting `THREAT_MODEL_DIR` is module 10's job.

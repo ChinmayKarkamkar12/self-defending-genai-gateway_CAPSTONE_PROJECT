@@ -68,6 +68,7 @@ If any stage crashes, the request is **blocked** (fail-closed, ADR-0001).
 | 2026-10-13 | Classifier v2 shipped as a recorded override; RL v3 NO-GO | `9897a4e`..`c124640` |
 | 2026-10-13 | Module 7: tamper-evident audit log (hash chain, trigger, tamper demo) | see PROGRESS.md |
 | 2026-10-14 | Module 7 review: 5 fixes incl. 3x faster gateway; optional Ollama provider and first real end-to-end run; streaming rejected | `18eadc2`..`9486c01` |
+| 2026-10-14 | Module 8: admin login, the "checkpoint" dashboard (6 screens), 61 dashboard tests, Docker, CI | `ae68574`..`4291bab` |
 
 ---
 
@@ -417,6 +418,59 @@ ones), ruff clean.
   real model instead of only with fake replies. Several bugs only showed up
   that way.
 
+### Module 8 — Admin dashboard — 2026-10-14
+
+**Goal:** the only real "web app" in the project: a screen where an admin sees
+and controls everything the gateway does. It's what faculty will click through.
+
+**Two decisions Chinmay made first:**
+
+- **Look:** he did not want it to look like a typical AI-generated dashboard.
+  The design idea became "a checkpoint, not a dashboard":
+  - signage-style headings (Barlow, after California highway signs) and a
+    font designed for readability (Atkinson Hyperlegible);
+  - a calm grey background;
+  - four colours, each always meaning the same decision: teal = allowed,
+    ochre = cleaned, indigo = held for review, crimson = refused.
+- **Login:** username and password (not just one shared admin key).
+
+**What was built, why, and how:**
+
+| # | What | Why | How | Proof | Commit |
+|---|---|---|---|---|---|
+| 1 | **Admin login on the gateway** | Every `/v1/admin` route was open to anyone (L3-1, L6a-4, L7-7): anyone could read the audit log, change budgets or forge review verdicts | `admin_users` table with scrypt password hashes; login returns a random token, and Redis stores only its hash for 8 h; 5 wrong passwords lock the username for 15 min; the login check is attached once to every admin router, and a test walks all admin endpoints | 22 new gateway tests; live: 401 without login, logout kills the token | `ae68574` |
+| 2 | **Reviewer = the logged-in admin** | The verdict API took the reviewer's name from the request, so anyone could sign a verdict as someone else | The name now comes from the session; the field was removed | Test with two different admins amending | `ae68574` |
+| 3 | **Summary endpoints** | The plan says the dashboard must not compute business logic itself | `/stats/overview` (the route: how many each check stopped), `/stats/timeline`, `/stats/spend`, `/teams`, `/redaction-entities` | Tests with one request of every kind | `ae68574` |
+| 4 | **The dashboard itself** | Faculty demo and real admin use | Next.js 16. The browser never sees the token: the dashboard's own server keeps it in an httpOnly cookie (page scripts can't read it) and forwards calls to the gateway. Six screens: overview with the **route map**, review queue, audit log, threats, cost, personal data | Screenshots on live data; 45 unit tests | `6af74a2` |
+| 5 | **Tests, Docker, CI** | The plan's test list, and "works against the real stack" | Vitest + Testing Library with a mocked gateway; 16 Playwright tests against `docker compose up`; Dockerfile; CI now builds and tests the dashboard and runs the Postgres tests too | 45/45, 16/16, 392/392 | `4291bab` |
+| 6 | **Bugs found by testing it for real** | Several only appeared live | No login worked inside Docker (the origin check compared against the server's own `0.0.0.0` address); "recently decided" showed the *oldest* verdicts; a "saved" message vanished; grey text failed contrast; the PII screen described a feature (swapping tokens back) the gateway doesn't have | Each fix has a test that fails without it | `4291bab` |
+| 7 | **Live tamper demo in the dashboard** | The best demo moment, with the dashboard catching it, not a script | `tamper_demo --postgres --hold` edits an entry and waits; the dashboard's "Check integrity" says "Tampered: entry #2 ... its contents were changed"; Enter restores it | Done live: tampered, caught, restored, intact again | `4291bab` |
+
+**The route map** (the overview's centrepiece):
+- All of the window's requests are drawn as one band. At each check
+  (intake, session, budget, screening, provider, reply check) the requests it
+  stopped peel off downward in the colour of what happened to them.
+- So the band visibly narrows wherever the gateway is doing work, and what's
+  left at the end is what got answered.
+- On a phone it becomes a simple list.
+
+**Honest limits:**
+- A changed password doesn't end sessions that are already open (L8-1).
+- Every admin can do everything (L8-2).
+- The lockout can be abused to lock out a known admin for 15 minutes (L8-3).
+- The automated review test intercepts responses instead of deciding real
+  items, because real verdicts train the defense (L8-6). The real flow was
+  done by hand.
+
+**Viva lines:**
+- *Why doesn't the browser hold the token?* So a script injected into the
+  page can't steal the session. The cookie is httpOnly and SameSite=Strict,
+  and writes are also checked for the same origin.
+- *Why compute stats in the gateway?* One source of truth, and the
+  dashboard stays a thin client, as the plan requires.
+- *How do you know the dashboard works?* 45 component tests, 16 browser
+  tests against the real Docker stack, and both demo flows done live.
+
 ## 5. Lessons that cut across modules
 
 1. **Verify live, not just with tests.** Running the real Docker stack caught
@@ -470,16 +524,17 @@ ones), ruff clean.
 - **Doesn't logging slow every request down?** No: the request only queues the
   entry. Measured A/B on Postgres: no meaningful difference.
 - **What would you improve?** Re-fit the bandit's bands to calibrated
-  scores, a larger validation set for the RL lockout constraint, admin auth (module 8), real session logs to replace the
+  scores, a larger validation set for the RL lockout constraint, admin roles and session revocation (L8-1, L8-2), real session logs to replace the
   simulator (L6b-3).
 
 ## 7. What's next
 
-1. ~~Shared HTTPS client per provider (L2-2)~~: done 2026-10-14.
-2. Module 8: admin dashboard (Next.js) and admin authentication; the audit log
-   viewer and its "verify integrity" button are a planned demo moment.
-3. Module 9: testing strategy; Module 10: deployment.
-4. (Optional) Pre-registered re-fit of 6a's band edges to v2's scores (L6a-30).
+1. Module 9: testing strategy (a seeded throwaway database for browser tests,
+   a load test now that the gateway is ~3x faster, profiling the remaining
+   ~9 requests/second limit).
+2. Module 10: deployment (fresh demo database, a gateway database user that
+   can't disable the audit trigger, L7-6).
+3. (Optional) Pre-registered re-fit of 6a's band edges to v2's scores (L6a-30).
 
 ---
 
@@ -494,3 +549,4 @@ ones), ruff clean.
 - 2026-10-14: module 7 review pass (L2-2 fixed, three smaller bugs, one test gap).
 - 2026-10-14 (later): optional Ollama provider and the first real end-to-end run.
 - 2026-10-14 (evening): streaming rejected up front (L2-3).
+- 2026-10-14 (night): module 8, admin dashboard.
