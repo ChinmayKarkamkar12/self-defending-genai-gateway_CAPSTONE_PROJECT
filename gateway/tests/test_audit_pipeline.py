@@ -146,6 +146,49 @@ async def test_upstream_error(client, audit_writer, session_maker):
 
 
 @respx.mock
+async def test_streaming_request_rejected_before_anything_runs(
+    client, audit_writer, session_maker, fake_redis, db_session, seeded_team_and_key
+):
+    team, _ = seeded_team_and_key
+    db_session.add(
+        BudgetPolicy(
+            team_id=team.id,
+            period=BudgetPeriod.DAILY,
+            limit_usd=Decimal("10.00"),
+            rate_limit_rps=100,
+        )
+    )
+    await db_session.commit()
+    upstream = respx.post(f"{OPENAI_BASE_URL}/chat/completions").mock(
+        return_value=Response(200, json={})
+    )
+
+    response, entry = await _send(
+        client, audit_writer, session_maker, {**chat_body(), "stream": True}
+    )
+
+    assert response.status_code == 422
+    assert "streaming is not supported" in response.json()["detail"]
+    assert entry.outcome == AuditOutcome.REJECTED_STREAMING
+    # Never sent upstream, never scored, no budget reserved.
+    assert not upstream.called
+    assert entry.threat_score is None
+    assert await fake_redis.keys("budget:*") == []
+
+
+@respx.mock
+async def test_stream_false_is_a_normal_request(client, audit_writer, session_maker):
+    mock_openai()
+
+    response, entry = await _send(
+        client, audit_writer, session_maker, {**chat_body(), "stream": False}
+    )
+
+    assert response.status_code == 200
+    assert entry.outcome == AuditOutcome.ALLOWED
+
+
+@respx.mock
 async def test_upstream_non_json_body(client, audit_writer, session_maker):
     # A 200 whose body isn't JSON (e.g. a proxy's HTML page) is an upstream
     # error (502), not an unhandled exception.

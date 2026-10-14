@@ -94,6 +94,13 @@ milliseconds' worth). A production system would use a durable queue such as
 Redis Streams or Kafka here. See [`LIMITATIONS.md`](LIMITATIONS.md) L7-1 to
 L7-8 and [`docs/adr/0002-audit-log-immutability.md`](docs/adr/0002-audit-log-immutability.md).
 
+## Streaming is not supported
+
+Requests with `"stream": true` get a 422 straight away (nothing is sent
+upstream): the gateway checks the complete response, for system-prompt leaks
+and echoed redaction tokens, before returning any of it. Send requests
+without streaming. See [`LIMITATIONS.md`](LIMITATIONS.md) L2-3.
+
 ## Optional: run without a paid API key (Ollama)
 
 The gateway can forward to a local [Ollama](https://ollama.com) server instead

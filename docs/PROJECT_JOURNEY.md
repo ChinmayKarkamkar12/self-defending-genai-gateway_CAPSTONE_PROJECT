@@ -386,6 +386,14 @@ If any stage crashes, the request is **blocked** (fail-closed, ADR-0001).
   before the model saw them (the model's reply literally says
   `[REDACTED_EMAIL_ADDRESS]`), blocked an injection, and logged all of it with
   a valid hash chain.
+- **Streaming, found by testing honestly (2026-10-14).** Sending
+  `"stream": true` (answers that arrive word by word, like ChatGPT) gave a
+  confusing 502, after the provider had already generated, and would have
+  billed, the answer. Never in the plan, never tested. Decision: reject it up
+  front with a clear message, audited, and record it as a deliberate limit
+  (L2-3). Viva line: *streaming is possible, but it conflicts with checking
+  the whole answer before the user sees it; we chose inspection over
+  streaming, and buffer-then-scan is the future-work path.*
 
 ## 5. Lessons that cut across modules
 
@@ -463,3 +471,4 @@ If any stage crashes, the request is **blocked** (fail-closed, ADR-0001).
 - 2026-10-13 (night): module 7, tamper-evident audit logging.
 - 2026-10-14: module 7 review pass (L2-2 fixed, three smaller bugs, one test gap).
 - 2026-10-14 (later): optional Ollama provider and the first real end-to-end run.
+- 2026-10-14 (evening): streaming rejected up front (L2-3).

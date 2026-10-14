@@ -109,6 +109,8 @@ class AuditOutcome(StrEnum):
     ESCALATED = "escalated"
     BLOCKED_OUTPUT_LEAK = "blocked_output_leak"
     REJECTED_UNKNOWN_MODEL = "rejected_unknown_model"
+    # `"stream": true` - not supported, see app/api/chat.py (LIMITATIONS.md L2-3).
+    REJECTED_STREAMING = "rejected_streaming"
     UPSTREAM_ERROR = "upstream_error"
     PIPELINE_ERROR = "pipeline_error"
     INTERNAL_ERROR = "internal_error"

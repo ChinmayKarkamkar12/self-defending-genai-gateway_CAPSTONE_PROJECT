@@ -17,7 +17,7 @@ deliberately left open. It is **not** a bug; bugs get fixed, not listed.
 - Statuses: `Open` (accepted for now) · `Planned` (scheduled in a later
   module) · `Resolved`.
 
-Last updated: 2026-10-14 (module 7 review: L2-2 resolved; L5-2 live data point from the optional Ollama provider. 2026-10-13, module 7: L7-1 to L7-6 and L2-2 added, L5-2 updated with a live observation. Earlier the same day, data expansion: L5-1 resolved, L5-2 mitigated, L5-8 and L6a-30 added, L6a-1 re-checked, L6b-10 updated with run 3)
+Last updated: 2026-10-14 (L2-3 added: streaming rejected up front. Module 7 review: L2-2 resolved; L5-2 live data point from the optional Ollama provider. 2026-10-13, module 7: L7-1 to L7-6 and L2-2 added, L5-2 updated with a live observation. Earlier the same day, data expansion: L5-1 resolved, L5-2 mitigated, L5-8 and L6a-30 added, L6a-1 re-checked, L6b-10 updated with run 3)
 
 ---
 
@@ -107,6 +107,7 @@ Last updated: 2026-10-14 (module 7 review: L2-2 resolved; L5-2 live data point f
 | ID | Limitation | Impact | Why it exists | Future fix | Unblocked by | Status |
 |---|---|---|---|---|---|---|
 | L2-1 | Unit/integration tests run on SQLite (a per-test file since module 7) and fakeredis, not real Postgres/Redis | ORM-to-Postgres mapping differences aren't caught by the suite (migrations and key paths were verified manually against real Postgres/Redis) | Fast, hermetic tests | Add a Postgres + Redis service job in CI for an integration subset | Module 9 (testing strategy) | Planned (module 9) |
+| L2-3 | Streaming (`"stream": true`) is not supported. Since 2026-10-14 such a request is rejected up front with a clear 422 and audited as `rejected_streaming`, before any budget reservation, threat scoring or upstream call. Before that, it was sent upstream (generated, and billed by a paid provider), then failed as a 502 with the gateway recording $0 | Chat apps that ask for streaming by default must turn it off to use the gateway; users wait for the whole answer instead of watching it appear | The post-call checks (output scan for system-prompt leaks and echoed redaction tokens) need the complete response before the client sees any of it; streaming was never in the plan (module 2) | Buffer-then-scan: collect the full upstream stream, run the post-call checks, then replay it to the client as a stream (keeps the API shape, loses the early first words). Scanning incrementally with a hold-back window is possible but much more complex | A client that requires streaming | Open (by design) |
 
 ---
 

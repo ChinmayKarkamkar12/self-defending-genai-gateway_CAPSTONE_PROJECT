@@ -46,6 +46,10 @@ logger = logging.getLogger("gateway.chat")
 router = APIRouter()
 
 PIPELINE_UNAVAILABLE_DETAIL = "a required pipeline component is unavailable"
+STREAMING_UNSUPPORTED_DETAIL = (
+    "streaming is not supported: the gateway inspects the complete response "
+    "before returning it; send the request without \"stream\": true"
+)
 
 
 async def _require_api_key(
@@ -88,6 +92,15 @@ def _mark(ctx: RequestContext, outcome: AuditOutcome, stage: str | None = None) 
 async def _process(ctx: RequestContext) -> Any:
     """Pipeline -> provider -> pipeline. Returns the provider response, or
     raises HTTPException with the outcome marked for the audit entry."""
+    # Checked before anything else - no budget reserved, nothing scored or
+    # sent upstream. A streamed response arrives in pieces, so the
+    # post-call checks (output scan) couldn't see it whole before the
+    # client did; and the adapters expect one JSON body, so it used to be
+    # generated (and billed) upstream and then fail as a 502 (L2-3).
+    if ctx.body.get("stream") not in (None, False):
+        _mark(ctx, AuditOutcome.REJECTED_STREAMING)
+        raise HTTPException(status_code=422, detail=STREAMING_UNSUPPORTED_DETAIL)
+
     try:
         pre_result = await run_stages(PRE_CALL_STAGES, ctx)
         # Allowed or blocked, the session agent sees what 6a did.
