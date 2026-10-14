@@ -72,7 +72,7 @@ function LearningChart({ stats }: { stats: BanditStats }) {
           <CartesianGrid vertical={false} stroke="#d9dfe6" />
           <XAxis dataKey="n" tick={AXIS} tickLine={false} axisLine={{ stroke: "#c6ced8" }} />
           <YAxis tick={AXIS} tickLine={false} axisLine={false} />
-          <ReferenceLine y={0} stroke="#6b7a8d" />
+          <ReferenceLine y={0} stroke="#5a697c" />
           <Tooltip
             formatter={(v) => [Number(v).toFixed(2), "Total reward"]}
             labelFormatter={(n) => `After verdict ${n}`}

@@ -140,11 +140,21 @@ async def list_items(
     offset: int = 0,
 ) -> list[ReviewQueueItem]:
     await expire_stale(db)
+    if status == ReviewStatus.PENDING:
+        # Oldest first: the queue is worked in the order items arrived.
+        order = (ReviewQueueItem.created_at, ReviewQueueItem.id)
+    else:
+        # Newest verdict first, so "recently decided" means what it says.
+        order = (
+            ReviewQueueItem.reviewed_at.desc(),
+            ReviewQueueItem.created_at.desc(),
+            ReviewQueueItem.id,
+        )
     stmt = (
         select(ReviewQueueItem)
         .where(ReviewQueueItem.status == status)
         .options(selectinload(ReviewQueueItem.threat_event))
-        .order_by(ReviewQueueItem.created_at, ReviewQueueItem.id)
+        .order_by(*order)
         .limit(limit)
         .offset(offset)
     )

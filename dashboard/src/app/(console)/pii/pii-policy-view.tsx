@@ -43,6 +43,8 @@ export function PiiPolicyView() {
   const [teamId, setTeamId] = useState<string>();
   const entities = useGateway(getRedactionEntities, []);
   const policy = useGateway(teamId ? () => getRedactionPolicy(teamId) : null, [teamId]);
+  // Kept here, not in the editor: saving reloads the policy and remounts it.
+  const [notice, setNotice] = useState<string>();
 
   const usingDefaults = policy.error instanceof ApiError && policy.error.status === 404;
   const loadError = entities.error ?? (usingDefaults ? undefined : policy.error);
@@ -61,8 +63,22 @@ export function PiiPolicyView() {
       <PageHeader
         title="Personal data"
         lead="What the gateway removes from prompts before they leave for a model provider. Only counts of what was removed are ever logged, never the values."
-        actions={<TeamPicker value={teamId} onChange={setTeamId} />}
+        actions={
+          <TeamPicker
+            value={teamId}
+            onChange={(id) => {
+              setTeamId(id);
+              setNotice(undefined);
+            }}
+          />
+        }
       />
+
+      {notice ? (
+        <p role="status" className="mb-6 rounded border-l-4 border-allowed bg-allowed-wash px-4 py-3 font-semibold text-allowed-ink">
+          {notice}
+        </p>
+      ) : null}
 
       <Status
         loading={!start && !loadError}
@@ -81,7 +97,11 @@ export function PiiPolicyView() {
             initialEnabled={start.enabled}
             initialMode={start.mode}
             usingDefaults={!start.own}
-            onSaved={policy.reload}
+            onSaved={() => {
+              setNotice("Policy saved. It applies to this team's next request.");
+              policy.reload();
+            }}
+            onEdit={() => setNotice(undefined)}
           />
         ) : null}
       </Status>
@@ -96,6 +116,7 @@ function PolicyEditor({
   initialMode,
   usingDefaults,
   onSaved,
+  onEdit,
 }: {
   teamId: string;
   supported: string[];
@@ -103,10 +124,11 @@ function PolicyEditor({
   initialMode: RedactionMode;
   usingDefaults: boolean;
   onSaved: () => void;
+  onEdit: () => void;
 }) {
   const [enabled, setEnabled] = useState<Set<string>>(() => new Set(initialEnabled));
   const [mode, setMode] = useState<RedactionMode>(initialMode);
-  const [saved, setSaved] = useState<string>();
+  const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
 
   function toggle(entity: string) {
@@ -116,7 +138,8 @@ function PolicyEditor({
       else next.add(entity);
       return next;
     });
-    setSaved(undefined);
+    setError(undefined);
+    onEdit();
   }
 
   async function save() {
@@ -126,11 +149,10 @@ function PolicyEditor({
         enabled_entities: supported.filter((e) => enabled.has(e)),
         mode,
       });
-      setSaved("Policy saved. It applies to this team's next request.");
       onSaved();
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) return goToLogin();
-      setSaved(err instanceof Error ? err.message : "Couldn't save the policy.");
+      setError(err instanceof Error ? err.message : "Couldn't save the policy.");
     } finally {
       setBusy(false);
     }
@@ -190,7 +212,8 @@ function PolicyEditor({
                     checked={mode === m.value}
                     onChange={() => {
                       setMode(m.value);
-                      setSaved(undefined);
+                      setError(undefined);
+                      onEdit();
                     }}
                     className="h-4 w-4 accent-ink"
                   />
@@ -213,9 +236,9 @@ function PolicyEditor({
         <span className="text-sm text-ink-2">
           {enabled.size} of {supported.length} kinds removed
         </span>
-        {saved ? (
-          <span role="status" className="text-sm font-semibold">
-            {saved}
+        {error ? (
+          <span role="alert" className="text-sm font-semibold text-refused-ink">
+            {error}
           </span>
         ) : null}
       </div>

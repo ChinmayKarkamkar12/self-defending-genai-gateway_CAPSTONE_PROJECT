@@ -24,10 +24,11 @@ build plan.
    # then edit .env and fill in OPENAI_API_KEY / ANTHROPIC_API_KEY etc.
    ```
 
-3. **Start the gateway**
+3. **Start the gateway and the dashboard**
 
    ```bash
-   docker compose up
+   docker compose up -d --build
+   docker compose exec gateway alembic upgrade head
    ```
 
 4. **Check it's alive**
@@ -37,11 +38,20 @@ build plan.
    # -> {"status": "ok"}
    ```
 
+5. **Create an admin and open the dashboard**
+
+   ```bash
+   docker compose exec gateway python -m scripts.create_admin <your-name>
+   # asks for a password twice (12+ characters)
+   ```
+
+   Then open http://localhost:3000 and sign in.
+
 ## Repo layout
 
 ```
 gateway/        FastAPI app (proxy, config, tests)
-dashboard/      admin dashboard (added in module 8)
+dashboard/      admin dashboard (Next.js, module 8)
 project_plan/   module-by-module implementation plan
 docker-compose.yml
 .env.example
@@ -93,6 +103,37 @@ delays a response. A crash loses whatever is still queued (normally a few
 milliseconds' worth). A production system would use a durable queue such as
 Redis Streams or Kafka here. See [`LIMITATIONS.md`](LIMITATIONS.md) L7-1 to
 L7-8 and [`docs/adr/0002-audit-log-immutability.md`](docs/adr/0002-audit-log-immutability.md).
+
+## Admin dashboard (module 8)
+
+http://localhost:3000, a Next.js app that is purely a client of the gateway's
+`/v1/admin` API. Every admin route requires a signed-in admin (username +
+password); the browser never sees the session token, which the dashboard's
+own server keeps in an httpOnly cookie and attaches when it forwards calls.
+
+| Screen | What it's for |
+|---|---|
+| Overview | The route through the checkpoint: how many requests each check stopped, decisions over time, spend, personal data removed, audit-log integrity |
+| Review queue | Decide held requests as attack or safe (keys **A** / **S**); verdicts teach the defense |
+| Audit log | Every request as a ledger with hash links; "Check integrity" re-hashes the whole chain; CSV export |
+| Threats | What the per-request defense chose, whether it's learning, per-session risk and unlocking a locked-out key |
+| Cost & usage | Budget gauge and limits per team, spend by model |
+| Personal data | Which kinds of personal data each team removes, and how |
+
+Live tamper demo: run
+`docker compose exec gateway python -m scripts.tamper_demo --postgres --hold`,
+click **Check integrity** on the Audit log screen (it names the edited entry),
+then press Enter in the terminal to restore it.
+
+Dashboard development and tests (Node 24):
+
+```bash
+cd dashboard
+npm install
+GATEWAY_URL=http://localhost:8000 npm run dev      # http://localhost:3000
+npm run lint && npm run typecheck && npm test      # unit + component tests
+E2E_ADMIN_USER=... E2E_ADMIN_PASSWORD=... npm run test:e2e   # against docker compose up
+```
 
 ## Streaming is not supported
 

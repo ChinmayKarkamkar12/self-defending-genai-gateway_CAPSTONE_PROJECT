@@ -7,6 +7,9 @@ const body = Atkinson_Hyperlegible_Next({
   subsets: ["latin"],
   variable: "--font-body",
   display: "swap",
+  // Next has no metrics to size-match a fallback for this family.
+  adjustFontFallback: false,
+  fallback: ["system-ui", "sans-serif"],
 });
 
 const sign = Barlow_Semi_Condensed({

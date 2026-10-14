@@ -113,7 +113,8 @@ export function RouteMap({ overview }: { overview: Overview }) {
           viewBox={`0 0 ${W} 250`}
           className="block h-auto w-full min-w-[760px]"
           role="img"
-          aria-labelledby="route-title route-desc"
+          aria-labelledby="route-title"
+          aria-describedby="route-desc"
         >
           <title id="route-title">Route through the checkpoint</title>
           <desc id="route-desc">
@@ -121,7 +122,8 @@ export function RouteMap({ overview }: { overview: Overview }) {
               stages
                 .map((s) => `${STAGE_META[s.key].label}: ${count(s.stopped)} stopped`)
                 .join(". ") +
-              `. ${count(answered)} answered.`}
+              `. ${count(answered)} answered.` +
+              (overview.errors > 0 ? ` ${count(overview.errors)} internal errors are not on the route.` : "")}
           </desc>
 
           {/* Station labels and rules */}
@@ -153,7 +155,7 @@ export function RouteMap({ overview }: { overview: Overview }) {
                 className="font-display"
                 fontSize={24}
                 fontWeight={700}
-                fill={stage.stopped > 0 ? TEXT_HEX[stopColour[i]] : "#6b7a8d"}
+                fill={stage.stopped > 0 ? TEXT_HEX[stopColour[i]] : "#5a697c"}
               >
                 {count(stage.stopped)}
               </text>
@@ -230,7 +232,7 @@ function RouteList({ overview, total }: { overview: Overview; total: number }) {
           <span className="font-display text-lg font-semibold">{STAGE_META[stage.key].label}</span>
           <span
             className="figures text-right font-display text-xl font-bold"
-            style={{ color: stage.stopped > 0 ? TEXT_HEX[dominantDecision(overview, stage.key)] : "#6b7a8d" }}
+            style={{ color: stage.stopped > 0 ? TEXT_HEX[dominantDecision(overview, stage.key)] : "#5a697c" }}
           >
             {count(stage.stopped)}
           </span>

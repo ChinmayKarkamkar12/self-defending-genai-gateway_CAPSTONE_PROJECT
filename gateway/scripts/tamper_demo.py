@@ -9,8 +9,11 @@ Shows the hash chain catching an edit made directly in the database - the
   3. verify again                  -> BROKEN, pointing at that exact entry
   4. put the original value back   -> VALID again
 
-    python -m scripts.tamper_demo              # throwaway SQLite database
-    python -m scripts.tamper_demo --postgres   # the gateway's real database
+    python -m scripts.tamper_demo                   # throwaway SQLite database
+    python -m scripts.tamper_demo --postgres        # the gateway's real database
+    python -m scripts.tamper_demo --postgres --hold # pause while tampered, so the
+                                                    # dashboard's "Check integrity"
+                                                    # can catch it live; Enter restores
 
 The default mode creates a temporary database, writes 10 sample entries
 through the real AuditWriter, and deletes it afterwards.
@@ -149,7 +152,7 @@ async def _set_action(session_maker, engine: AsyncEngine, entry_id: uuid.UUID, v
         )
 
 
-async def run(postgres: bool) -> int:
+async def run(postgres: bool, hold: bool = False) -> int:
     tmpdir = None
     if postgres:
         from app.config import settings
@@ -193,6 +196,12 @@ async def run(postgres: bool) -> int:
             after = await _verify(session_maker)
             _report(after)
             caught = (not after.valid) and after.first_broken_entry == str(target.id)
+            if hold:
+                _say(
+                    f"\n   Entry #{target.sequence_number} is tampered right now. Open the"
+                    "\n   dashboard's Audit log and click 'Check integrity' to see it caught."
+                )
+                await asyncio.to_thread(input, "   Press Enter to restore it... ")
         finally:
             _say(f"\n4. Restoring entry #{target.sequence_number} to '{original}'")
             await _set_action(session_maker, engine, target.id, original)
@@ -218,8 +227,15 @@ def main() -> None:
         action="store_true",
         help="tamper with (and restore) an existing entry in the configured database",
     )
+    parser.add_argument(
+        "--hold",
+        action="store_true",
+        help="with --postgres: wait for Enter before restoring (for showing it in the dashboard)",
+    )
     args = parser.parse_args()
-    sys.exit(asyncio.run(run(args.postgres)))
+    if args.hold and not args.postgres:
+        parser.error("--hold needs --postgres (the dashboard reads the real database)")
+    sys.exit(asyncio.run(run(args.postgres, args.hold)))
 
 
 if __name__ == "__main__":

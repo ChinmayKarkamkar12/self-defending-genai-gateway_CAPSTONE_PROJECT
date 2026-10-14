@@ -3,7 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { GATEWAY_URL, SESSION_COOKIE, sameOrigin } from "@/lib/server/gateway";
 
 export async function POST(request: NextRequest) {
-  if (!sameOrigin(request, request.nextUrl.origin)) {
+  if (!sameOrigin(request)) {
     return NextResponse.json({ detail: "cross-site request refused" }, { status: 403 });
   }
   let body: unknown;

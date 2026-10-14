@@ -405,3 +405,25 @@ async def test_unreadable_stored_state_falls_back_to_prior(db_session, caplog):
     await db_session.commit()
     row = await db_session.get(BanditState, store_module.POLICY_NAME)
     assert row.params["format"] == 2
+
+
+async def test_reviewed_items_list_newest_verdict_first(client):
+    """The dashboard's "recently decided" asks for a few reviewed items; it
+    must get the latest verdicts, not the oldest (pending stays oldest-first)."""
+    classify_as(0.7)
+    await send(client, "first suspicious request")
+    await send(client, "second suspicious request")
+    first, second = (await client.get("/v1/admin/review-queue")).json()
+    assert first["created_at"] <= second["created_at"]  # pending: arrival order
+
+    # Decide in arrival order: the newest verdict is then on the newer item,
+    # so newest-verdict-first and oldest-created-first disagree.
+    await client.post(f"/v1/admin/review-queue/{first['id']}/decide", json={"decision": "attack"})
+    await client.post(f"/v1/admin/review-queue/{second['id']}/decide", json={"decision": "attack"})
+
+    reviewed = (await client.get("/v1/admin/review-queue", params={"status": "reviewed"})).json()
+    assert [item["id"] for item in reviewed] == [second["id"], first["id"]]
+    latest = (
+        await client.get("/v1/admin/review-queue", params={"status": "reviewed", "limit": 1})
+    ).json()
+    assert [item["id"] for item in latest] == [second["id"]]

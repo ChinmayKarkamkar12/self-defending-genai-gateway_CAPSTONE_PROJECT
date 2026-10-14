@@ -30,6 +30,21 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Module 8: the admin dashboard. The browser only ever talks to this; its
+  # server forwards to the gateway's /v1/admin API over the compose network,
+  # with the admin session from an httpOnly cookie.
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      GATEWAY_URL: http://gateway:8000
+    depends_on:
+      - gateway
+    restart: unless-stopped
+
   postgres:
     image: postgres:16-alpine
     environment:

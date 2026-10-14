@@ -14,7 +14,7 @@ async function forward(request: NextRequest, ctx: RouteContext<"/api/gw/[...path
   if (path.some((segment) => !SAFE_SEGMENT.test(segment) || segment === "..")) {
     return NextResponse.json({ detail: "invalid path" }, { status: 400 });
   }
-  if (request.method !== "GET" && !sameOrigin(request, request.nextUrl.origin)) {
+  if (request.method !== "GET" && !sameOrigin(request)) {
     return NextResponse.json({ detail: "cross-site request refused" }, { status: 403 });
   }
   const token = request.cookies.get(SESSION_COOKIE)?.value;

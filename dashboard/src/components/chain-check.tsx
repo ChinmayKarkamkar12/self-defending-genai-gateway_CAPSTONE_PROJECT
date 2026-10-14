@@ -9,6 +9,15 @@ import type { VerifyResult } from "@/lib/types";
 import { goToLogin } from "@/lib/use-gateway";
 import { Button } from "./ui";
 
+// verify.py's reasons, said for a person.
+function explain(reason: string | null): string {
+  if (!reason) return "It no longer matches";
+  if (reason.startsWith("entry_hash")) return "Its contents were changed after it was written";
+  if (reason.startsWith("prev_hash")) return "It no longer links to the entry before it";
+  if (reason.startsWith("sequence gap")) return "Entries before it are missing";
+  return reason;
+}
+
 /** Links of a chain: drawn intact, or broken at the entry that fails. */
 function ChainLinks({ result }: { result: VerifyResult }) {
   const links = 9;
@@ -100,8 +109,11 @@ export function ChainCheck({ compact = false }: { compact?: boolean }) {
                 Tampered: entry #{result.first_broken_sequence} no longer matches
               </p>
               <p className="mt-1 text-sm text-ink">
-                {result.reason}. The {count(result.entry_count)} entries before it check out; everything from
-                #{result.first_broken_sequence} on can&apos;t be trusted.
+                {explain(result.reason)}.{" "}
+                {result.entry_count === 1
+                  ? "The 1 entry before it checks out"
+                  : `The ${count(result.entry_count)} entries before it check out`}
+                ; everything from #{result.first_broken_sequence} on can&apos;t be trusted.
               </p>
               {!compact ? null : (
                 <Link href="/audit" className="mt-2 inline-block text-sm font-semibold underline underline-offset-2">
