@@ -364,10 +364,25 @@
   - **Pushed to `origin/main` on 2026-10-14** (`18eadc2`, `13306ed`, `b14ad63`, `9486c01`, `b0c4e47`; no Claude co-author trailer). GitHub Actions on `b0c4e47`: **success** (https://github.com/ChinmayKarkamkar12/self-defending-genai-gateway_CAPSTONE_PROJECT/actions/runs/38522609904). The real-Postgres tests are skipped in CI (no `TEST_POSTGRES_DSN`); they were run locally (368/368). The what/why/how of every 2026-10-14 change is in `docs/PROJECT_JOURNEY.md`, section "Changes made after module 7".
 
 ## In progress
-(none)
+- [ ] **Module 8: Admin dashboard** (started 2026-10-14).
+  - **Decisions by Chinmay:**
+    - **Design:** "checkpoint, not a dashboard". Chinmay explicitly does not want it to look AI-generated or templated.
+      - The overview opens with the route through the checkpoint (requests stopped at each stage).
+      - Fonts: Barlow Semi Condensed (headings and numbers, highway-signage roots) + Atkinson Hyperlegible (body).
+      - Cool pale grey base, ink-blue text. Four decision colours: allowed teal `#2F7D6B`, cleaned ochre `#B7862B`, held indigo `#5B4BB7`, refused crimson `#A6243A`; failed is neutral.
+      - Each screen gets a shape that fits its content (ledger for the audit log, one-at-a-time decision desk for the review queue, gauge bars for budgets). No identical card grid, gradients, glass, emoji or all-caps labels.
+    - **Login:** username + password (not a single admin key).
+  - **Done - gateway side (`ae68574`):**
+    - Admin login: migration 0009 `admin_users`; scrypt hashes; Redis sessions storing only the token's hash, 8 h TTL; lockout after 5 failures for 15 min; `scripts/create_admin.py`.
+    - Every `/v1/admin` router requires an admin (wired once in `main.py`; a test walks all 22 endpoints). Closes L3-1, L6a-4, L7-7.
+    - Review verdicts are recorded under the logged-in admin; the `reviewer` body field is gone.
+    - `GET /v1/admin/teams`, `/v1/admin/stats/{overview,timeline,spend}`.
+    - **Tests:** 390/390 with Postgres.
+    - **Live:** 0009 applied; admin `chinmay` created; login/me/overview/verify/logout all checked.
+  - **Next:** scaffold `dashboard/` (Next.js App Router + TS + Tailwind + Recharts). The browser never sees the session token: Next.js route handlers keep it in an httpOnly cookie and proxy to the gateway.
+  - **Node.js:** `winget install OpenJS.NodeJS.LTS` (v24) was started and is waiting for Chinmay's admin prompt.
 
 ## Not started
-- [ ] Module 8: Admin dashboard
 - [ ] Module 9: Testing strategy
 - [ ] Module 10: Deployment
 - [ ] Module 11: Build roadmap (reference only, not implemented)
