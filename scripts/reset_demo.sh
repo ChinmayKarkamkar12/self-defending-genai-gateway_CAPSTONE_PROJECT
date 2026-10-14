@@ -50,6 +50,10 @@ ensure DEMO_ADMIN_PASSWORD "$(secret 15)"
 ensure DEMO_MODEL local-llama3:latest
 ensure OLLAMA_BASE_URL http://host.docker.internal:11434/v1
 ensure LOCAL_MODEL_DEMO_PRICE_PER_MILLION 60
+if [ -n "$new_admin_password" ]; then
+  # Shown now, not only at the end: a failed start would otherwise hide it.
+  echo "  Dashboard admin password: $new_admin_password  (kept in .env as DEMO_ADMIN_PASSWORD)"
+fi
 
 if [ "${1:-}" != "--yes" ]; then
   echo
@@ -59,7 +63,13 @@ if [ "${1:-}" != "--yes" ]; then
 fi
 
 docker compose down --volumes --remove-orphans
-docker compose up -d --build
+if ! docker compose up -d --build; then
+  # The reason is in the setup jobs' own output, not in compose's summary.
+  echo
+  echo "Startup failed. What the setup jobs said:"
+  docker compose logs --no-log-prefix model migrate
+  exit 1
+fi
 echo "Waiting for the demo traffic to finish (the classifier loads first, ~30 s)..."
 docker compose wait seed-traffic > /dev/null
 docker compose logs --no-log-prefix seed-traffic
@@ -68,10 +78,6 @@ admin=$(sed -n 's/^DEMO_ADMIN_USERNAME=//p' .env | head -n 1)
 echo
 echo "Ready."
 echo "  Dashboard: http://localhost:3000   (user: $admin)"
-if [ -n "$new_admin_password" ]; then
-  echo "  Password:  $new_admin_password   (new - it's also in .env as DEMO_ADMIN_PASSWORD)"
-else
-  echo "  Password:  DEMO_ADMIN_PASSWORD in .env"
-fi
+echo "  Password:  DEMO_ADMIN_PASSWORD in .env"
 echo "  Gateway:   http://localhost:8000"
 echo "  Demo steps: docs/DEMO_SCRIPT.md"

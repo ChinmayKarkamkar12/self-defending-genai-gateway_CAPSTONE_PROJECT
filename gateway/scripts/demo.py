@@ -39,9 +39,10 @@ def say(text: str = "") -> None:
     print(text, flush=True)
 
 
-async def send(slug: str, content: str, **extra) -> httpx.Response:
+async def send(slug: str, content: str, quiet: bool = False, **extra) -> httpx.Response:
     body = {"model": demo_model(), "messages": [{"role": "user", "content": content}], **extra}
-    say(f"\n{TEAMS_BY_SLUG[slug].name} sends: {content}")
+    if not quiet:
+        say(f"\n{TEAMS_BY_SLUG[slug].name} sends: {content}")
     async with httpx.AsyncClient(base_url=GATEWAY, timeout=180) as client:
         return await client.post(
             "/v1/chat/completions",
@@ -141,9 +142,11 @@ async def step_budget() -> None:
         say("LOCAL_MODEL_DEMO_PRICE_PER_MILLION in .env (a pretend price, demo only).")
         return
     team = TEAMS_BY_SLUG["research"]
-    say(f"{team.name}'s daily budget: ${team.budget_usd}")
+    question = "In three sentences, why do companies cap what teams spend on AI?"
+    say(f"{team.name}'s daily budget: ${team.budget_usd}. It asks, again and again:")
+    say(f"  {question}  (answers capped at 80 tokens)")
     for attempt in range(1, 21):
-        response = await send("research", "Name one planet in one word.", max_tokens=20)
+        response = await send("research", question, quiet=True, max_tokens=80)
         if response.status_code != 200:
             detail = response.json().get("detail")
             say(f"Gateway: {response.status_code} {detail} - refused before the model was")

@@ -66,6 +66,10 @@ foreach ($name in $wanted.Keys) {
 }
 # UTF-8 without a BOM: Docker Compose would read a BOM as part of the first name.
 [System.IO.File]::WriteAllText((Join-Path (Get-Location) ".env"), $envText, (New-Object System.Text.UTF8Encoding $false))
+if ($newAdminPassword) {
+    # Shown now, not only at the end: a failed start would otherwise hide it.
+    Write-Host "  Dashboard admin password: $newAdminPassword  (kept in .env as DEMO_ADMIN_PASSWORD)"
+}
 
 if (-not $Yes) {
     Write-Host ""
@@ -77,7 +81,13 @@ if (-not $Yes) {
 docker compose down --volumes --remove-orphans
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 docker compose up -d --build
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+if ($LASTEXITCODE -ne 0) {
+    # The reason is in the setup jobs' own output, not in compose's summary.
+    Write-Host ""
+    Write-Host "Startup failed. What the setup jobs said:"
+    docker compose logs --no-log-prefix model migrate
+    exit 1
+}
 
 Write-Host "Waiting for the demo traffic to finish (the classifier loads first, ~30 s)..."
 docker compose wait seed-traffic | Out-Null
@@ -87,10 +97,6 @@ $admin = [regex]::Match((Get-Content .env -Raw), "(?m)^DEMO_ADMIN_USERNAME=(.*)$
 Write-Host ""
 Write-Host "Ready."
 Write-Host "  Dashboard: http://localhost:3000   (user: $admin)"
-if ($newAdminPassword) {
-    Write-Host "  Password:  $newAdminPassword   (new - it's also in .env as DEMO_ADMIN_PASSWORD)"
-} else {
-    Write-Host "  Password:  DEMO_ADMIN_PASSWORD in .env"
-}
+Write-Host "  Password:  DEMO_ADMIN_PASSWORD in .env"
 Write-Host "  Gateway:   http://localhost:8000"
 Write-Host "  Demo steps: docs/DEMO_SCRIPT.md"

@@ -12,17 +12,23 @@
 # 127.0.0.1 only: the host's tests and scripts reach them, other machines
 # on the network don't (Redis has no password).
 
+# The one-off jobs run the gateway's image: built once by the `gateway`
+# service below, never pulled. (Giving them `build:` too made compose build
+# the same tag four times in parallel, and the builds collided.)
 x-gateway-image: &gateway-image
-  build:
-    context: ./gateway
-    dockerfile: Dockerfile
   image: genai-gateway:local
+  pull_policy: never
   env_file:
     - .env
 
 services:
   gateway:
-    <<: *gateway-image
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    image: genai-gateway:local
+    env_file:
+      - .env
     ports:
       - "8000:8000"
     environment:
