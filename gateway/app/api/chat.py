@@ -46,6 +46,12 @@ logger = logging.getLogger("gateway.chat")
 router = APIRouter()
 
 PIPELINE_UNAVAILABLE_DETAIL = "a required pipeline component is unavailable"
+
+# Refusals a client should handle differently from "this request was judged
+# unsafe" (422): a spent budget won't clear by retrying (402, Payment
+# Required), a rate limit will (429 - the status OpenAI's SDKs back off and
+# retry on). Module 10, for the demo's budget step (project_plan/10 §4).
+BLOCK_STATUS = {"budget_exceeded": 402, "rate_limited": 429}
 STREAMING_UNSUPPORTED_DETAIL = (
     "streaming is not supported: the gateway inspects the complete response "
     "before returning it; send the request without \"stream\": true"
@@ -113,7 +119,10 @@ async def _process(ctx: RequestContext) -> Any:
     if pre_result.decision == Decision.BLOCK:
         _mark(ctx, classify_block(ctx, pre_result.reason), ctx.metadata.get("blocked_by"))
         await _release_budget_reservation(ctx)
-        raise HTTPException(status_code=422, detail=pre_result.reason or "blocked by pipeline")
+        raise HTTPException(
+            status_code=BLOCK_STATUS.get(pre_result.reason, 422),
+            detail=pre_result.reason or "blocked by pipeline",
+        )
 
     model = ctx.body.get("model", "")
     try:

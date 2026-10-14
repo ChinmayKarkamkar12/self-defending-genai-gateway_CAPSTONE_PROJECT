@@ -3,6 +3,7 @@
 Nothing "smart" lives here — just the typed settings contract every other
 module reads from. See project_plan/01-repo-and-conventions.md.
 """
+from decimal import Decimal
 from typing import Literal
 
 from pydantic import Field, ValidationError
@@ -34,6 +35,12 @@ class Settings(BaseSettings):
     # http://localhost:11434/v1 (gateway on the host); then model
     # "local-llama3" is forwarded to Ollama as "llama3".
     OLLAMA_BASE_URL: str = ""
+    # Demo only: a pretend USD price per million tokens (input and output)
+    # for those free local models, so a team's budget visibly fills up and
+    # runs out in a live demo without a paid provider (module 10,
+    # docs/DEMO_SCRIPT.md). 0 (default) = local models cost nothing, which
+    # is the truth.
+    LOCAL_MODEL_DEMO_PRICE_PER_MILLION: Decimal = Field(default=Decimal("0"), ge=0)
 
     # "closed" = fail safe (block) on internal error, "open" = fail permissive.
     # See module 2 for the rationale.

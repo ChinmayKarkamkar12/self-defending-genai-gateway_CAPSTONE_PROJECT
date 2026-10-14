@@ -253,7 +253,7 @@ async def test_over_budget_request_blocked_before_provider_call(stack):
             break
     calls_before_refusal = upstream.call_count
 
-    assert statuses[-1] == 422, statuses
+    assert statuses[-1] == 402, statuses
     assert len(statuses) >= 3 and set(statuses[:-1]) == {200}, statuses
     assert "budget" in response.json()["detail"]
     # The refused request was never sent upstream.

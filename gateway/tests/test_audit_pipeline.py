@@ -1,6 +1,7 @@
 """Module 7: every authenticated request is audited, however it leaves the
 gateway, with what each module decided about it."""
 
+import time
 from decimal import Decimal
 
 import pytest
@@ -104,7 +105,8 @@ async def test_budget_exceeded(
 
     response, entry = await _send(client, audit_writer, session_maker, chat_body())
 
-    assert response.status_code == 422
+    assert response.status_code == 402  # Payment Required: retrying won't help
+    assert response.json()["detail"] == "budget_exceeded"
     assert entry.outcome == AuditOutcome.BLOCKED_BUDGET
     assert entry.pipeline_stage == "budget_check_stage"
     assert entry.action_taken == NOT_EVALUATED
@@ -344,3 +346,26 @@ async def test_failed_refund_does_not_replace_the_real_error(
     assert response.status_code == 502  # the upstream error, not the refund's
     assert entry.outcome == AuditOutcome.UPSTREAM_ERROR
     assert "failed to release budget reservation" in caplog.text
+
+
+async def test_rate_limited(
+    client, audit_writer, session_maker, db_session, fake_redis, seeded_team_and_key
+):
+    team, api_key = seeded_team_and_key
+    db_session.add(
+        BudgetPolicy(
+            team_id=team.id, period=BudgetPeriod.DAILY, limit_usd=Decimal("10"), rate_limit_rps=1
+        )
+    )
+    await db_session.commit()
+    # The key's token bucket is empty, and stamped in the future so it can't
+    # refill while the test runs (rate_limiter.py clamps negative elapsed time).
+    await fake_redis.hset(
+        f"ratelimit:{api_key.id}", mapping={"tokens": 0, "ts": time.time() + 3600}
+    )
+
+    response, entry = await _send(client, audit_writer, session_maker, chat_body())
+
+    assert response.status_code == 429  # Too Many Requests: SDKs back off and retry
+    assert response.json()["detail"] == "rate_limited"
+    assert entry.outcome == AuditOutcome.BLOCKED_RATE_LIMIT

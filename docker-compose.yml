@@ -1,34 +1,92 @@
+# The whole system, one command (module 10): `docker compose up -d --build`.
+#
+# Start order, each step waiting for the one before:
+#   postgres, redis (healthy)
+#   -> model    the trained classifier is in place (scripts/fetch_model.py)
+#   -> migrate  migrations, the gateway's restricted DB role, demo records
+#   -> gateway  (healthy once the classifier is loaded)
+#   -> dashboard, seed-traffic (demo requests through the real pipeline)
+# model, migrate and seed-traffic are one-off jobs: they exit when done.
+#
+# Settings come from .env (copy .env.example). Postgres and Redis listen on
+# 127.0.0.1 only: the host's tests and scripts reach them, other machines
+# on the network don't (Redis has no password).
+
+x-gateway-image: &gateway-image
+  build:
+    context: ./gateway
+    dockerfile: Dockerfile
+  image: genai-gateway:local
+  env_file:
+    - .env
+
 services:
   gateway:
-    build:
-      context: ./gateway
-      dockerfile: Dockerfile
+    <<: *gateway-image
     ports:
       - "8000:8000"
-    env_file:
-      - .env
     environment:
-      # .env's POSTGRES_DSN/REDIS_URL point at `localhost`, which is correct
-      # for running the gateway on the host (dev, tests, alembic, seed
-      # script) but wrong inside this compose network, where `localhost`
-      # resolves to the gateway container itself, not the postgres/redis
-      # containers. Override with the service DNS names for the
-      # containerized gateway specifically; env_file values above are
-      # superseded by these.
-      POSTGRES_DSN: postgresql://postgres:postgres@postgres:5432/gateway
+      # .env's POSTGRES_DSN/REDIS_URL point at `localhost`, which is right for
+      # the host (tests, alembic, scripts) but not inside this network, where
+      # `localhost` is the container itself. The gateway connects as its own
+      # role, which can't disable the audit trigger (L7-6, scripts/db_setup.py).
+      POSTGRES_DSN: postgresql://gateway_app:${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD in .env}@postgres:5432/gateway
       REDIS_URL: redis://redis:6379/0
-      # The threat classifier checkpoint is git-ignored (~700MB) and built
-      # locally by training/train_classifier.py, so it's mounted rather than
-      # baked into the image. The gateway refuses to start without it.
+      # The classifier checkpoint is git-ignored (~740 MB), so it's mounted
+      # rather than baked into the image. The gateway refuses to start
+      # without it.
       THREAT_MODEL_DIR: /models/threat-classifier
     volumes:
       - ./training/checkpoints/final:/models/threat-classifier:ro
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
+      # Loading the classifier takes ~10-30 s.
+      start_period: 120s
     restart: unless-stopped
+
+  model:
+    <<: *gateway-image
+    command: ["python", "-m", "scripts.fetch_model"]
+    environment:
+      THREAT_MODEL_DIR: /models/threat-classifier
+    volumes:
+      - ./training/checkpoints/final:/models/threat-classifier
+    restart: "no"
+
+  migrate:
+    <<: *gateway-image
+    command: ["python", "-m", "scripts.db_setup"]
+    environment:
+      # The database owner: migrations, roles, demo records. Only this job
+      # (and tamper_demo, run the same way) gets this login - never the
+      # long-running gateway.
+      POSTGRES_DSN: postgresql://postgres:postgres@postgres:5432/gateway
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      model:
+        condition: service_completed_successfully
+    restart: "no"
+
+  seed-traffic:
+    <<: *gateway-image
+    command: ["python", "-m", "scripts.seed_demo", "--traffic", "http://gateway:8000"]
+    environment:
+      POSTGRES_DSN: postgresql://gateway_app:${POSTGRES_APP_PASSWORD}@postgres:5432/gateway
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      gateway:
+        condition: service_healthy
+    restart: "no"
 
   # Module 8: the admin dashboard. The browser only ever talks to this; its
   # server forwards to the gateway's /v1/admin API over the compose network,
@@ -42,7 +100,14 @@ services:
     environment:
       GATEWAY_URL: http://gateway:8000
     depends_on:
-      - gateway
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/login"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
     restart: unless-stopped
 
   postgres:
@@ -52,11 +117,11 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: gateway
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d gateway"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -65,7 +130,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

@@ -10,6 +10,10 @@ See project_plan/03-cost-usage-governance.md §3.
 """
 from decimal import Decimal
 
+from app.config import settings
+
+LOCAL_PREFIX = "local-"
+
 # model prefix -> {input_per_million, output_per_million} in USD
 PRICING_TABLE: dict[str, dict[str, Decimal]] = {
     "gpt-4o": {
@@ -38,7 +42,7 @@ PRICING_TABLE: dict[str, dict[str, Decimal]] = {
     },
     # Optional local Ollama models (providers/ollama.py): run on your own
     # machine, so no per-token charge.
-    "local-": {
+    LOCAL_PREFIX: {
         "input_per_million": Decimal("0"),
         "output_per_million": Decimal("0"),
     },
@@ -63,6 +67,10 @@ def _lookup(model: str) -> dict[str, Decimal]:
 def calculate_cost(model: str, tokens_in: int, tokens_out: int) -> Decimal:
     """Return the USD cost of a request as a Decimal, rounded to 6 places."""
     prices = _lookup(model)
+    if model.startswith(LOCAL_PREFIX) and settings.LOCAL_MODEL_DEMO_PRICE_PER_MILLION:
+        # A pretend price for free local models, demo only (config.py).
+        demo = settings.LOCAL_MODEL_DEMO_PRICE_PER_MILLION
+        prices = {"input_per_million": demo, "output_per_million": demo}
     cost = (Decimal(tokens_in) / _ONE_MILLION * prices["input_per_million"]) + (
         Decimal(tokens_out) / _ONE_MILLION * prices["output_per_million"]
     )

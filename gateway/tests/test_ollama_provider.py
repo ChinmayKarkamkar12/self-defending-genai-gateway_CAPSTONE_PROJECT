@@ -134,3 +134,12 @@ async def test_errors_are_upstream_errors_without_the_server_address(ollama_on, 
 
     assert str(caught.value) == message
     assert "ollama.test" not in str(caught.value)
+
+
+def test_demo_price_makes_local_models_cost_something(monkeypatch):
+    # Module 10: a pretend price so a budget can run out in a live demo.
+    monkeypatch.setattr(settings, "LOCAL_MODEL_DEMO_PRICE_PER_MILLION", Decimal("40"))
+
+    assert calculate_cost("local-llama3", 100, 200) == Decimal("0.012000")
+    # Real providers keep their real prices.
+    assert calculate_cost("gpt-4", 1_000_000, 0) == Decimal("30.000000")
