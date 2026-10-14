@@ -27,6 +27,14 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str
     ANTHROPIC_API_KEY: str
 
+    # Optional: a local Ollama server (OpenAI-compatible API), for running
+    # the gateway end to end without a paid provider key. Empty (default)
+    # = off: `local-*` models are rejected as unknown, like any other.
+    # Set e.g. http://host.docker.internal:11434/v1 (gateway in Docker) or
+    # http://localhost:11434/v1 (gateway on the host); then model
+    # "local-llama3" is forwarded to Ollama as "llama3".
+    OLLAMA_BASE_URL: str = ""
+
     # "closed" = fail safe (block) on internal error, "open" = fail permissive.
     # See module 2 for the rationale.
     FAIL_MODE: Literal["open", "closed"] = "closed"

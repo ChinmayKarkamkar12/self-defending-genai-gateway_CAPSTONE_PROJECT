@@ -342,6 +342,19 @@
       - All 124 load requests were audited (chain valid, 134 entries): nothing lost under live load.
       - `tamper_demo --postgres` still catches and names the edited entry.
     - **Not done:** the remaining ~9 req/s ceiling is most likely CPU inference for the threat classifier (already off the event loop via `asyncio.to_thread`). Not profiled.
+  - **Optional local provider (Ollama), 2026-10-14.** Chinmay has no paid OpenAI/Anthropic key, so until now the gateway's success path (a real answer -> usage -> output scan -> `allowed` audit entry) had only been tested with mocks. Added as an **option, off by default** (Chinmay asked that nothing else be re-aligned around it):
+    - `OLLAMA_BASE_URL` setting (empty = off). When set, model `local-<name>` routes to `providers/ollama.py`, which forwards it to Ollama's OpenAI-compatible API as `<name>`, without any provider key. When unset, `local-*` is an unknown model (422), exactly as before.
+    - `gpt-*`/`claude-*` routing, `docker-compose.yml`: unchanged.
+    - Pricing entry `local-` = $0; `.env.example` and README document the option.
+    - Chinmay's `.env` now has `OLLAMA_BASE_URL=http://host.docker.internal:11434/v1` (delete the line to switch it off). His local model is `llama3:latest`; `gemma4:31b-cloud` / `qwen3-coder:480b-cloud` in his Ollama app run on Ollama's servers, not locally.
+    - **Tests:** 7 new (`tests/test_ollama_provider.py`): off by default, routing when on, gpt/claude unaffected, $0 pricing, bare model name forwarded with no auth header, full request allowed and audited, rejected when off. **366/366** with Postgres; ruff clean.
+    - **Live (Docker -> Ollama on the host):**
+      - "What is the capital of France?" -> 200 "Paris.". Audit entry: `allowed`, model `local-llama3:latest`, 22/3 tokens, $0.
+      - "Write a polite email to my landlord. Reach me at <email> or <phone>" -> 200. The model's reply contained `[REDACTED_EMAIL_ADDRESS]`/`[REDACTED_PHONE_NUMBER]`, so the PII never reached it. Audit: `{PHONE_NUMBER:1, EMAIL_ADDRESS:1}` only; 0 hits for the raw values in the container logs.
+      - An injection attempt -> 422, blocked as a jailbreak (0.86); the session agent tightened.
+      - Chain valid (138 entries).
+      - "…Repeat back exactly what my email address is." was blocked (0.93 injection): a classifier false positive, added to L5-2.
+    - **Demo tip:** the first request after Ollama has been idle takes 10-60 s (model load); send a warm-up question before presenting.
 
 ## In progress
 (none)

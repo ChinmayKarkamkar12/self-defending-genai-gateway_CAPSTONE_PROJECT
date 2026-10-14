@@ -377,6 +377,15 @@ If any stage crashes, the request is **blocked** (fail-closed, ADR-0001).
   - Also closed a test gap: the "unexpected error" audit path had no test.
   - After the fixes: 359/359 tests with Postgres, and a live load run of 124
     requests left 124 new audit entries and a valid chain.
+- **A real model, for free (2026-10-14).** With no paid API key, the "real
+  answer comes back" path had only ever been tested with fake replies. Added
+  an *optional* provider for Ollama (a model running on the laptop), off
+  unless one `.env` line is set; a `local-` model prefix keeps the audit log
+  honest about which model answered and what it cost ($0). The live run is the
+  best demo in the project: the gateway redacted an email and phone number
+  before the model saw them (the model's reply literally says
+  `[REDACTED_EMAIL_ADDRESS]`), blocked an injection, and logged all of it with
+  a valid hash chain.
 
 ## 5. Lessons that cut across modules
 
@@ -453,3 +462,4 @@ If any stage crashes, the request is **blocked** (fail-closed, ADR-0001).
 - 2026-10-13 (end of day): v3 result, v2 override, 6a re-check, RL v3 NO-GO.
 - 2026-10-13 (night): module 7, tamper-evident audit logging.
 - 2026-10-14: module 7 review pass (L2-2 fixed, three smaller bugs, one test gap).
+- 2026-10-14 (later): optional Ollama provider and the first real end-to-end run.

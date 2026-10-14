@@ -1,5 +1,5 @@
 """Abstract upstream LLM provider interface."""
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Any, Protocol
 
@@ -31,12 +31,14 @@ class UpstreamClient:
     short-lived client per call, the module 2 behaviour.
     """
 
-    def __init__(self, base_url: str):
+    def __init__(self, base_url: str | Callable[[], str]):
+        # A callable is read each time a client is built (a configurable URL).
         self._base_url = base_url
         self._client: httpx.AsyncClient | None = None
 
     def _new_client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(base_url=self._base_url, timeout=UPSTREAM_TIMEOUT)
+        base_url = self._base_url() if callable(self._base_url) else self._base_url
+        return httpx.AsyncClient(base_url=base_url, timeout=UPSTREAM_TIMEOUT)
 
     @property
     def is_open(self) -> bool:

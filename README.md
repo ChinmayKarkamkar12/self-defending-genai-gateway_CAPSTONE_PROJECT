@@ -94,6 +94,25 @@ milliseconds' worth). A production system would use a durable queue such as
 Redis Streams or Kafka here. See [`LIMITATIONS.md`](LIMITATIONS.md) L7-1 to
 L7-8 and [`docs/adr/0002-audit-log-immutability.md`](docs/adr/0002-audit-log-immutability.md).
 
+## Optional: run without a paid API key (Ollama)
+
+The gateway can forward to a local [Ollama](https://ollama.com) server instead
+of OpenAI/Anthropic. It's **off by default** and changes nothing else.
+
+1. Install Ollama and pull a model: `ollama pull llama3`
+2. Add to `.env`: `OLLAMA_BASE_URL=http://host.docker.internal:11434/v1`
+   (`http://localhost:11434/v1` if the gateway runs on the host), then
+   `docker compose up -d --build`
+3. Ask for model `local-<name>`; the gateway forwards it as `<name>`:
+
+```bash
+curl http://localhost:8000/v1/chat/completions -H "Authorization: Bearer $KEY"   -H "Content-Type: application/json"   -d '{"model": "local-llama3:latest", "messages": [{"role": "user", "content": "hi"}]}'
+```
+
+Local models are priced at $0, so cost budgets never trip for them (rate
+limits still apply). Remove the `.env` line to switch it off. The first
+request after Ollama has been idle is slow (it loads the model into memory).
+
 ## Status
 
 🚧 Modules 1–7 complete (through tamper-evident audit logging); the

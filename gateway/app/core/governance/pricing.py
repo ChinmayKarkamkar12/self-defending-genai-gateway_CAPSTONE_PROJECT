@@ -36,6 +36,12 @@ PRICING_TABLE: dict[str, dict[str, Decimal]] = {
         "input_per_million": Decimal("0.25"),
         "output_per_million": Decimal("1.25"),
     },
+    # Optional local Ollama models (providers/ollama.py): run on your own
+    # machine, so no per-token charge.
+    "local-": {
+        "input_per_million": Decimal("0"),
+        "output_per_million": Decimal("0"),
+    },
 }
 
 _ONE_MILLION = Decimal("1000000")
