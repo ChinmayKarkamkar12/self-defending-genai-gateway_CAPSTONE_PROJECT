@@ -139,7 +139,7 @@ jobs:
             echo "## Bandit vs static thresholds (v2 splits)"
             # Its log is already Markdown tables.
             sed -n '/^## Experiment/,$p' eval/bandit.log 2>/dev/null
-          } >> "$GITHUB_STEP_SUMMARY"
+          } >> "$GITHUB_STEP_SUMMARY" || true  # nothing to publish if an earlier step failed
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -201,4 +201,5 @@ jobs:
 
       - name: Stack logs on failure
         if: failure()
-        run: docker compose logs --tail 200
+        # The stack may never have started (e.g. no .env yet).
+        run: docker compose logs --tail 200 || true
