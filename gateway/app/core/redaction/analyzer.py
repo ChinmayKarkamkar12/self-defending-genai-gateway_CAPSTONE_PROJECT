@@ -7,6 +7,7 @@ resources are tight for the demo environment") and builds the engine lazily
 so importing this module doesn't pay spaCy's load cost until redaction is
 actually needed.
 """
+import logging
 from functools import lru_cache
 
 from presidio_analyzer import AnalyzerEngine
@@ -17,6 +18,15 @@ from app.core.redaction.merge import merge_spans
 from app.core.redaction.spans import SOURCE_PRESIDIO, Span
 
 _SPACY_MODEL = "en_core_web_sm"
+
+# Presidio's own log lines carry the text it is analysing: at DEBUG the
+# whole prompt's context words ("Context list is: ..."), and even at ERROR
+# (the IBAN recognizer logs the text it failed to validate). Found by
+# module 9's security boundary tests with logging at DEBUG. Its failures
+# still reach us as exceptions, which pii_redaction_stage wraps in a
+# text-free RedactionError, so nothing is lost by silencing it completely.
+for _name in ("presidio-analyzer", "decision_process"):
+    logging.getLogger(_name).setLevel(logging.CRITICAL + 1)
 
 
 @lru_cache(maxsize=1)

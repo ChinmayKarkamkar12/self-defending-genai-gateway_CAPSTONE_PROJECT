@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from app.core.context import Decision, RequestContext
@@ -190,3 +192,39 @@ async def test_list_form_content_is_redacted(db_session, seeded_team_and_key):
     assert "[REDACTED_EMAIL_ADDRESS]" in parts[0]["text"]
     assert parts[1] == image_part
     assert ctx.metadata["redaction_map"]["EMAIL_ADDRESS"] == 1
+
+
+async def test_tool_call_arguments_are_redacted(db_session, seeded_team_and_key):
+    # Module 9 found these reaching the provider untouched: the arguments of
+    # an assistant's tool calls (and the legacy function_call) are text too.
+    team, api_key = seeded_team_and_key
+    email, phone = "jane.smith@example.com", "(415) 555-0193"
+    ctx = make_ctx(team.id, api_key.id, db_session, "Send the invoice")
+    original_call = {
+        "id": "call_1",
+        "type": "function",
+        "function": {"name": "send_email", "arguments": json.dumps({"to": email})},
+    }
+    ctx.body["messages"] += [
+        {"role": "assistant", "content": None, "tool_calls": [original_call]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "sent"},
+        {
+            "role": "assistant",
+            "content": None,
+            "function_call": {"name": "call", "arguments": json.dumps({"number": phone})},
+        },
+    ]
+    original_body = json.dumps(ctx.body)
+
+    result = await pii_redaction_stage(ctx)
+
+    assert result.decision == Decision.MODIFY
+    messages = result.modified_body["messages"]
+    (call,) = messages[1]["tool_calls"]
+    assert json.loads(call["function"]["arguments"]) == {"to": "[REDACTED_EMAIL_ADDRESS]"}
+    assert call["id"] == "call_1" and call["function"]["name"] == "send_email"
+    legacy = json.loads(messages[3]["function_call"]["arguments"])
+    assert legacy == {"number": "[REDACTED_PHONE_NUMBER]"}
+    assert ctx.metadata["redaction_map"] == {"EMAIL_ADDRESS": 1, "PHONE_NUMBER": 1}
+    # The request body the stage was given is left as it was.
+    assert json.dumps(ctx.body) == original_body

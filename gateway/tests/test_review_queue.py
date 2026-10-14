@@ -11,7 +11,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.core.admin_auth import AdminPrincipal, require_admin
 from app.core.defense import store as store_module
-from app.core.defense.features import N_FEATURES, features_from_dict
+from app.core.defense.features import FEATURE_VERSION, N_FEATURES, features_from_dict
 from app.core.defense.store import BanditStore, bandit_store
 from app.core.defense.strip import REMOVED_MARKER
 from app.core.providers.openai import OPENAI_BASE_URL
@@ -427,3 +427,30 @@ async def test_reviewed_items_list_newest_verdict_first(client):
         await client.get("/v1/admin/review-queue", params={"status": "reviewed", "limit": 1})
     ).json()
     assert [item["id"] for item in latest] == [second["id"]]
+
+
+async def test_verdict_on_an_older_feature_layout_is_kept_but_not_learned(
+    client, db_session, monkeypatch
+):
+    """An event recorded before FEATURE_NAMES changed has a vector in the old
+    layout; learning from it would push the wrong weights. The verdict is
+    recorded and the bandit left alone (module 9: this guard was untested)."""
+    classify_as(0.7)
+    assert (await send(client)).status_code == 422  # escalated -> held
+    event = (await db_session.execute(select(ThreatEvent))).scalar_one()
+    event.feature_version = FEATURE_VERSION - 1
+    await db_session.commit()
+    updates = []
+    monkeypatch.setattr(bandit_store, "update", lambda *args, **kw: updates.append(args))
+
+    [item] = (await client.get("/v1/admin/review-queue")).json()
+    decided = await client.post(
+        f"/v1/admin/review-queue/{item['id']}/decide", json={"decision": "attack"}
+    )
+
+    assert decided.status_code == 200
+    assert decided.json()["bandit_updated"] is False
+    assert updates == []
+    await db_session.refresh(event)
+    assert event.human_label == "attack"
+    assert event.reward_applied is None

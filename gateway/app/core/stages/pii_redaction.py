@@ -2,8 +2,9 @@
 
 Reads `ctx.metadata["db"]`, populated by the chat endpoint before the
 pipeline runs (same pattern as budget_check_stage). Detects PII in every
-message's text content in the outbound prompt - plain-string content and
-every text part of list-form content alike - via
+message's text in the outbound prompt - plain-string content, every text
+part of list-form content, and the arguments of an assistant's tool calls
+(app/core/messages.py) alike - via
 app.core.redaction.analyzer, then redacts each detected span according to
 the team's RedactionPolicy (or the stage's default - see
 app.core.redaction.policy):
@@ -30,6 +31,7 @@ module catches its own detection/redaction failures and re-raises
 type name - so whatever the shared logger does with it, there's nothing to
 leak.
 """
+import copy
 import logging
 from typing import Any
 from uuid import UUID
@@ -37,7 +39,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.context import RequestContext, StageResult
-from app.core.messages import is_text_part
+from app.core.messages import is_text_part, tool_call_functions
 from app.core.redaction.analyzer import analyze_text
 from app.core.redaction.policy import effective_entities, effective_mode, get_redaction_policy
 from app.core.redaction.vault import store_token
@@ -115,6 +117,31 @@ async def _redact_content(
     return (new_parts if counts else content), counts
 
 
+async def _redact_tool_calls(
+    db: AsyncSession,
+    team_id: UUID,
+    message: dict[str, Any],
+    enabled_entities: list[str],
+    mode: RedactionMode,
+) -> tuple[dict[str, Any], dict[str, int]]:
+    """Redact the arguments of the tool calls an assistant message makes
+    (app/core/messages.py): a JSON string, so a replaced span leaves it
+    valid JSON. Returns a copy of the message; the request body is never
+    changed in place."""
+    if not tool_call_functions(message):
+        return message, {}
+    message = copy.deepcopy(message)
+    counts: dict[str, int] = {}
+    for function in tool_call_functions(message):
+        new_arguments, argument_counts = await _redact_text(
+            db, team_id, function["arguments"], enabled_entities, mode
+        )
+        if argument_counts:
+            _merge_counts(counts, argument_counts)
+            function["arguments"] = new_arguments
+    return message, counts
+
+
 async def pii_redaction_stage(ctx: RequestContext) -> StageResult:
     db = ctx.metadata["db"]
 
@@ -133,16 +160,20 @@ async def pii_redaction_stage(ctx: RequestContext) -> StageResult:
             new_content, counts = await _redact_content(
                 db, ctx.team_id, message.get("content"), enabled_entities, mode
             )
+            with_calls, call_counts = await _redact_tool_calls(
+                db, ctx.team_id, message, enabled_entities, mode
+            )
         except Exception as exc:  # noqa: BLE001 - see RedactionError docstring
             # Deliberately not logging str(exc)/repr(exc) here - see
             # module docstring for why that can't be trusted to never
             # contain request text. Type name only.
             failure_type = type(exc).__name__
             break
-        if counts:
+        if counts or call_counts:
             changed = True
             _merge_counts(redaction_map, counts)
-            message = {**message, "content": new_content}
+            _merge_counts(redaction_map, call_counts)
+            message = {**(with_calls if call_counts else message), "content": new_content}
         new_messages.append(message)
 
     # Raised outside the `except` block above, not via `raise ... from exc`

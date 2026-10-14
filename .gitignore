@@ -36,3 +36,9 @@ build/
 training/data/
 training/checkpoints/
 training/train_log.txt
+
+# Coverage data and HTML reports (module 9)
+.coverage
+.coverage.*
+.coverage-html/
+htmlcov/

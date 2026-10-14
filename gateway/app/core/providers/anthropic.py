@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 
 from app.config import settings
-from app.core.providers.base import UpstreamClient, UpstreamProviderError
+from app.core.providers.base import UpstreamClient, UpstreamProviderError, describe_http_error
 
 ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1"
 ANTHROPIC_VERSION = "2023-06-01"
@@ -68,7 +68,7 @@ class AnthropicProvider:
                 response.raise_for_status()
                 return _to_openai_response(response.json())
         except httpx.HTTPError as exc:
-            raise UpstreamProviderError(str(exc)) from exc
+            raise UpstreamProviderError(describe_http_error(exc)) from exc
         except (ValueError, AttributeError, TypeError) as exc:
             # A 2xx whose body isn't JSON, or isn't shaped like a Messages
             # API response (`content` not a list of blocks).

@@ -124,3 +124,53 @@ def test_residual_score_rescans_the_stripped_text():
     leftover = strip_flagged_content(body, LeftoverAfterCut(), max_threshold=0.5)
     assert leftover.removed_spans == 1
     assert leftover.residual_score == 0.9
+
+
+def _with_tool_call(arguments: str, content: str = "aaaaaaaaaa") -> dict:
+    return {
+        "messages": [
+            {"role": "user", "content": content},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": arguments},
+                    }
+                ],
+            },
+        ]
+    }
+
+
+def test_attack_in_tool_call_arguments_is_kept_whole_and_counted_as_residual():
+    # Module 9: tool call arguments are scored but can't be cut (that would
+    # break the JSON), so an attack there must make the request block.
+    body = _with_tool_call('{"q": "EVIL"}')  # scored as its value, "EVIL"
+
+    result = strip_flagged_content(body, WindowedFake(), max_threshold=0.5, min_window=0.3)
+
+    call = result.body["messages"][1]["tool_calls"][0]
+    assert call["function"]["arguments"] == '{"q": "EVIL"}'  # left valid JSON
+    assert result.residual_score == 0.97  # >= the block threshold: the stage blocks
+
+
+def test_clean_tool_call_arguments_add_nothing():
+    body = _with_tool_call('{"q": "weather"}', content="aaaaaaaaaaEVILbbbbbb")
+
+    result = strip_flagged_content(body, WindowedFake(), max_threshold=0.5)
+
+    assert result.removed_spans == 1
+    assert result.residual_score < 0.5
+
+
+def test_unscanned_tool_call_arguments_count_as_an_attack():
+    body = _with_tool_call('{"q": "' + "x" * 40 + '"}')
+
+    result = strip_flagged_content(
+        body, WindowedFake(unscanned_after=20), max_threshold=0.5, min_window=0.3
+    )
+
+    assert result.residual_score == 1.0

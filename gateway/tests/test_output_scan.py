@@ -1,4 +1,5 @@
 """See project_plan/05-threat-detection-classifier.md §6."""
+import json
 import uuid
 
 from app.core.context import Decision, RequestContext
@@ -126,3 +127,33 @@ async def test_output_scan_stage_handles_missing_response_gracefully():
     result = await output_scan_stage(ctx)
 
     assert result.decision == Decision.ALLOW
+
+
+async def test_output_scan_reads_tool_call_arguments():
+    # A model can leak its instructions through a tool call instead of its
+    # reply text (module 9).
+    ctx = make_ctx(SYSTEM_PROMPT, "")
+    ctx.metadata["provider_response"] = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "post_note",
+                                "arguments": json.dumps({"text": SYSTEM_PROMPT}),
+                            },
+                        }
+                    ],
+                }
+            }
+        ]
+    }
+
+    result = await output_scan_stage(ctx)
+
+    assert result.decision == Decision.BLOCK

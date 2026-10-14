@@ -1,5 +1,6 @@
 """Module 7: every authenticated request is audited, however it leaves the
 gateway, with what each module decided about it."""
+
 from decimal import Decimal
 
 import pytest
@@ -272,3 +273,74 @@ async def test_mixed_traffic_forms_one_valid_chain(
     ]
     async with session_maker() as session:
         assert (await verify_chain(session)).valid
+
+
+async def _broken(ctx: RequestContext) -> StageResult:
+    raise RuntimeError("boom")
+
+
+@pytest.mark.parametrize(
+    ("patch", "stage_name"),
+    [
+        # Cost accounting, the response check, and the bandit's feedback all
+        # run after the provider answered. Under FAIL_MODE=closed a failure in
+        # any of them must not hand the client a response nobody checked.
+        (lambda mp: mp.setattr(pipeline, "usage_recording_stage", _broken), "_broken"),
+        (lambda mp: mp.setattr(chat, "POST_CALL_STAGES", [_broken]), "_broken"),
+        (lambda mp: mp.setattr(pipeline, "defense_feedback_stage", _broken), "_broken"),
+    ],
+    ids=["usage_recording", "output_scan", "defense_feedback"],
+)
+@respx.mock
+async def test_failure_after_the_provider_answered_withholds_the_response(
+    client,
+    audit_writer,
+    session_maker,
+    fake_redis,
+    db_session,
+    seeded_team_and_key,
+    monkeypatch,
+    patch,
+    stage_name,
+):
+    team, _ = seeded_team_and_key
+    db_session.add(
+        BudgetPolicy(
+            team_id=team.id, period=BudgetPeriod.DAILY, limit_usd=Decimal("10"), rate_limit_rps=100
+        )
+    )
+    await db_session.commit()
+    mock_openai(content="UNCHECKED MODEL OUTPUT")
+    patch(monkeypatch)
+
+    response, entry = await _send(client, audit_writer, session_maker, chat_body())
+
+    assert response.status_code == 503
+    assert "UNCHECKED MODEL OUTPUT" not in response.text
+    assert entry.outcome == AuditOutcome.PIPELINE_ERROR
+    assert entry.pipeline_stage == stage_name
+
+
+@respx.mock
+async def test_failed_refund_does_not_replace_the_real_error(
+    client, audit_writer, session_maker, db_session, seeded_team_and_key, monkeypatch, caplog
+):
+    team, _ = seeded_team_and_key
+    db_session.add(
+        BudgetPolicy(
+            team_id=team.id, period=BudgetPeriod.DAILY, limit_usd=Decimal("10"), rate_limit_rps=100
+        )
+    )
+    await db_session.commit()
+    respx.post(f"{OPENAI_BASE_URL}/chat/completions").mock(return_value=Response(500))
+
+    async def refund_fails(*args):
+        raise ConnectionError("redis down")
+
+    monkeypatch.setattr(chat, "release_reservation", refund_fails)
+
+    response, entry = await _send(client, audit_writer, session_maker, chat_body())
+
+    assert response.status_code == 502  # the upstream error, not the refund's
+    assert entry.outcome == AuditOutcome.UPSTREAM_ERROR
+    assert "failed to release budget reservation" in caplog.text

@@ -24,7 +24,7 @@ limitations".
 import re
 from typing import Any
 
-from app.core.messages import content_text_parts, message_text
+from app.core.messages import message_text
 
 REDACTION_TOKEN_RE = re.compile(r"\[REDACTED_[A-Z_]+?(?:_[0-9a-f]{8})?\]")
 
@@ -62,7 +62,10 @@ def extract_system_prompt(body: dict[str, Any]) -> str:
 def extract_response_text(response_body: dict[str, Any]) -> str:
     parts: list[str] = []
     for choice in response_body.get("choices", []):
-        parts.extend(content_text_parts(choice.get("message", {}).get("content")))
+        message = choice.get("message")
+        if isinstance(message, dict):
+            # Content and tool call arguments: a leak through a tool call is still a leak.
+            parts.append(message_text(message))
     return "\n".join(parts)
 
 

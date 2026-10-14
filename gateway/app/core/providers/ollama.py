@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 
 from app.config import settings
-from app.core.providers.base import UpstreamClient, UpstreamProviderError
+from app.core.providers.base import UpstreamClient, UpstreamProviderError, describe_http_error
 
 LOCAL_MODEL_PREFIX = "local-"
 
@@ -38,6 +38,6 @@ class OllamaProvider:
                 response.raise_for_status()
                 return response.json()
         except httpx.HTTPError as exc:
-            raise UpstreamProviderError(str(exc)) from exc
+            raise UpstreamProviderError(describe_http_error(exc)) from exc
         except ValueError as exc:
             raise UpstreamProviderError("response body is not valid JSON") from exc

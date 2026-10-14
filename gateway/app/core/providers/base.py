@@ -17,7 +17,24 @@ class Provider(Protocol):
 
 class UpstreamProviderError(Exception):
     """Raised when the upstream provider call fails (network error, non-2xx,
-    a body that isn't the JSON the adapter expects, etc.)."""
+    a body that isn't the JSON the adapter expects, etc.).
+
+    Its message goes back to the client (chat.py's 502 detail), so it is
+    always one of the gateway's own descriptions - see `describe_http_error`."""
+
+
+def describe_http_error(exc: httpx.HTTPError) -> str:
+    """What the client is told about a failed upstream call: the status code
+    or the kind of failure, never the exception's own text. That text is
+    written by httpx or a network library and can carry the upstream URL (an
+    internal Ollama host, say) or whatever an error path chose to quote - a
+    provider key included. Module 9's security boundary tests found the
+    raw text reaching clients."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"provider returned HTTP {exc.response.status_code}"
+    if isinstance(exc, httpx.TimeoutException):
+        return "provider timed out"
+    return f"provider unreachable ({type(exc).__name__})"
 
 
 class UpstreamClient:

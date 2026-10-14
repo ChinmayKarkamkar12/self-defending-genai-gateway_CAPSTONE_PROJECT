@@ -36,11 +36,19 @@ is still at or above BANDIT_REDACT_WINDOW_THRESHOLD.
 The scan runs after module 4's PII redaction, on the text that would go
 upstream. For short prompts (a single window), redacting means removing
 the whole message - in effect a block that still reaches the provider.
+
+The arguments of an assistant's tool calls (app/core/messages.py) are scored
+like the rest of the conversation but never cut: a cut would break the JSON
+the call carries. So whatever scores high in them counts against the request
+as it stands - their highest window goes into `residual_score`, and an
+argument too long to scan in full counts as 1.0 - and the stage blocks
+rather than pass it. Module 9 found this gap once module 5 began scoring
+tool call arguments.
 """
 from dataclasses import dataclass
 from typing import Any
 
-from app.core.messages import is_text_part
+from app.core.messages import is_text_part, tool_call_texts
 from app.core.threat.classifier import WindowScan
 
 REMOVED_MARKER = "[REMOVED_SUSPICIOUS_CONTENT]"
@@ -86,6 +94,15 @@ def _conversation_texts(body: dict[str, Any]) -> list[str]:
     return texts
 
 
+def _tool_call_texts(body: dict[str, Any]) -> list[str]:
+    return [
+        text
+        for message in body.get("messages", [])
+        if isinstance(message, dict) and message.get("role") not in SYSTEM_ROLES
+        for text in tool_call_texts(message)
+    ]
+
+
 def _spans_to_cut(scan: WindowScan, threshold: float) -> list[tuple[int, int]]:
     spans = [(w.start, w.end) for w in scan.windows if w.attack_probability >= threshold]
     if scan.unscanned_from is not None:
@@ -98,12 +115,22 @@ def strip_flagged_content(
 ) -> StripResult:
     """Blocking (runs the classifier) - call it via asyncio.to_thread."""
     scans = {text: classifier.scan_windows(text) for text in _conversation_texts(body)}
+    tool_scans = [classifier.scan_windows(text) for text in _tool_call_texts(body)]
     top = max(
-        (w.attack_probability for scan in scans.values() for w in scan.windows), default=1.0
+        (
+            w.attack_probability
+            for scan in [*scans.values(), *tool_scans]
+            for w in scan.windows
+        ),
+        default=1.0,
     )
+    # What stays in the tool call arguments, which are never cut.
+    kept = max((w.attack_probability for scan in tool_scans for w in scan.windows), default=0.0)
+    if any(scan.unscanned_from is not None for scan in tool_scans):
+        kept = 1.0
     unscanned = any(scan.unscanned_from is not None for scan in scans.values())
-    if top < min_window and not unscanned:
-        return StripResult(body=body, removed_spans=0, threshold=min_window, residual_score=0.0)
+    if top < min_window and not unscanned and kept < min_window:
+        return StripResult(body=body, removed_spans=0, threshold=min_window, residual_score=kept)
     # Below the minimum only the unscanned tail is cut (threshold > 1).
     threshold = min(max_threshold, top) if top >= min_window else 2.0
 
@@ -150,5 +177,5 @@ def strip_flagged_content(
         body={**body, "messages": new_messages},
         removed_spans=removed,
         threshold=threshold,
-        residual_score=residual,
+        residual_score=max(residual, kept),
     )

@@ -4,7 +4,7 @@ import respx
 from httpx import Response
 
 from app.core.providers.anthropic import ANTHROPIC_BASE_URL, AnthropicProvider
-from app.core.providers.base import UpstreamProviderError
+from app.core.providers.base import UpstreamProviderError, describe_http_error
 from app.core.providers.openai import OPENAI_BASE_URL, OpenAIProvider
 from app.core.providers.registry import UnknownModelError, get_provider
 
@@ -79,3 +79,37 @@ async def test_anthropic_malformed_body_is_an_upstream_error(response):
     payload = {**_PAYLOAD, "model": "claude-3-5-sonnet-20241022"}
     with pytest.raises(UpstreamProviderError):
         await AnthropicProvider().chat_completion(payload)
+
+
+@pytest.mark.parametrize(
+    ("error", "described"),
+    [
+        (
+            httpx.HTTPStatusError(
+                "Client error '404' for url 'http://ollama.internal:11434/v1/chat/completions'",
+                request=httpx.Request("POST", "http://ollama.internal:11434/v1/chat/completions"),
+                response=httpx.Response(404),
+            ),
+            "provider returned HTTP 404",
+        ),
+        (httpx.ReadTimeout("timed out reading from 10.0.0.7"), "provider timed out"),
+        (
+            httpx.ConnectError("[Errno 111] refused: 10.0.0.7:443"),
+            "provider unreachable (ConnectError)",
+        ),
+    ],
+)
+def test_upstream_errors_are_described_without_their_own_text(error, described):
+    # The client sees this text (the 502 detail): no URL, host or quoted content.
+    assert describe_http_error(error) == described
+
+
+@respx.mock
+async def test_upstream_error_detail_hides_the_upstream_url():
+    respx.post(f"{OPENAI_BASE_URL}/chat/completions").mock(return_value=Response(503))
+
+    with pytest.raises(UpstreamProviderError) as caught:
+        await OpenAIProvider().chat_completion(_PAYLOAD)
+
+    assert str(caught.value) == "provider returned HTTP 503"
+    assert "openai.com" not in str(caught.value)

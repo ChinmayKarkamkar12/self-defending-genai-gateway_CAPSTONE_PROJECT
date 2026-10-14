@@ -10,6 +10,7 @@ from httpx import Response
 from app.config import settings
 from app.core.audit.entry import UNRECOGNIZED_MODEL, safe_model_name
 from app.core.governance.pricing import calculate_cost
+from app.core.providers.base import UpstreamProviderError
 from app.core.providers.ollama import OllamaProvider
 from app.core.providers.registry import UnknownModelError, get_provider
 from app.db.models import AuditOutcome
@@ -108,3 +109,28 @@ async def test_local_model_rejected_end_to_end_when_off(
     assert response.status_code == 422
     (entry,) = await all_entries(session_maker)
     assert entry.outcome == AuditOutcome.REJECTED_UNKNOWN_MODEL
+
+
+async def test_refuses_to_call_when_not_configured(ollama_off):
+    with pytest.raises(UpstreamProviderError, match="local provider is not configured"):
+        await OllamaProvider().chat_completion(chat_body(model="local-llama3"))
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    ("reply", "message"),
+    [
+        # Ollama answers 404 for a model it hasn't pulled. The client is told
+        # the status, not the internal URL httpx would quote (module 9).
+        (Response(404, text="model 'llama3' not found"), "provider returned HTTP 404"),
+        (Response(200, text="<html>not json</html>"), "response body is not valid JSON"),
+    ],
+)
+async def test_errors_are_upstream_errors_without_the_server_address(ollama_on, reply, message):
+    respx.post(f"{OLLAMA_URL}/chat/completions").mock(return_value=reply)
+
+    with pytest.raises(UpstreamProviderError) as caught:
+        await OllamaProvider().chat_completion(chat_body(model="local-llama3"))
+
+    assert str(caught.value) == message
+    assert "ollama.test" not in str(caught.value)

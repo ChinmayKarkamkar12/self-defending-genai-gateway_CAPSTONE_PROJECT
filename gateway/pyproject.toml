@@ -9,3 +9,14 @@ select = ["E", "F", "I", "W", "UP", "B"]
 asyncio_mode = "auto"
 pythonpath = ["."]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["app"]
+branch = true
+# Async code awaited across threads (asyncio.to_thread in the classifier and
+# redaction stages) is traced correctly with this on.
+concurrency = ["thread", "greenlet"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false

@@ -12,8 +12,10 @@ jobs:
         working-directory: gateway
     services:
       # For tests/test_audit_postgres.py (migrations, the append-only
-      # trigger, hash round trips through JSONB/numeric/timestamptz), which
-      # are skipped when TEST_POSTGRES_DSN isn't set.
+      # trigger, hash round trips through JSONB/numeric/timestamptz) and the
+      # postgres variants of module 9's cross-cutting tests
+      # (tests/pipeline_stack.py), which are skipped when TEST_POSTGRES_DSN /
+      # TEST_REDIS_URL aren't set.
       postgres:
         image: postgres:16-alpine
         env:
@@ -24,6 +26,15 @@ jobs:
           - 5432:5432
         options: >-
           --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -47,10 +58,14 @@ jobs:
       - name: Ruff lint
         run: ruff check .
 
-      - name: Pytest
+      - name: Pytest (with coverage)
         env:
           TEST_POSTGRES_DSN: postgresql://postgres:postgres@localhost:5432/postgres
-        run: pytest
+          TEST_REDIS_URL: redis://localhost:6379/15
+        # -rs lists every skipped test and why, so a skip can't hide in the
+        # dots: tests/test_full_pipeline.py and tests/test_classifier.py need
+        # the trained checkpoint, which only the full-checks workflow has.
+        run: pytest -rs --cov --cov-report=term
 
   dashboard:
     runs-on: ubuntu-latest
