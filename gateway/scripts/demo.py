@@ -83,7 +83,7 @@ async def show_audit(response: httpx.Response) -> AuditLogEntry | None:
         attack = entry.threat_score["prompt_injection"] + entry.threat_score["jailbreak"]
         say(f"  attack probability {attack:.3f}  (module 5's classifier)")
         say(f"  defense decision   {entry.action_taken}  (module 6a's bandit)")
-    say(f"  session agent      {entry.session_action}  (module 6b)")
+    say(f"  session agent      {entry.session_action or 'not reached'}  (module 6b)")
     say(f"  PII removed        {entry.redaction_summary or 'none'}  (module 4: counts only)")
     say(f"  cost               ${entry.cost_usd}")
     return entry
@@ -130,10 +130,15 @@ async def step_attack() -> None:
     )
     show_reply(response)
     entry = await show_audit(response)
-    if entry is not None and entry.action_taken == "escalate_to_human":
+    if entry is None:
+        return
+    if entry.action_taken == "escalate_to_human":
         say("Held for a person: open the dashboard's Review queue to decide it.")
-    say("Repeat this step: after 4 refusals in a row the session agent locks the key")
-    say("(Threats screen -> Locked keys -> Unlock).")
+    if entry.session_action == "lockout" or entry.outcome == "blocked_session_locked":
+        say("The key is locked. Dashboard: Threats -> Sessions -> pick the newest")
+        say("Red Team Sandbox session -> Unlock key.")
+    else:
+        say("Repeat this step: after 4 refusals in a row the session agent locks the key.")
 
 
 async def step_budget() -> None:
