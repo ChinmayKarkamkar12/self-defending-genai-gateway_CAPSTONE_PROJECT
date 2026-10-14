@@ -2,9 +2,8 @@
 dashboard (module 8). See project_plan/06b-adaptive-defense-rl-session-agent.md
 §7 task 11.
 
-Same caveat as every /v1/admin route today (LIMITATIONS.md L3-1): no admin
-authentication until module 8 - in particular, anyone who can reach the
-gateway can lift a lockout.
+Like every /v1/admin route, these require a logged-in admin (module 8,
+app/main.py).
 """
 from datetime import UTC, datetime
 from typing import Annotated

@@ -6,7 +6,7 @@ log viewer (module 8). See project_plan/07-audit-logging.md §6.
     GET /v1/admin/logs/export      CSV compliance export, same filters
 
 Read-only: nothing here (or anywhere) updates or deletes an entry. Like
-every /v1/admin route these have no authentication yet (LIMITATIONS.md L3-1).
+every /v1/admin route these require a logged-in admin (module 8, app/main.py).
 """
 import csv
 import io

@@ -1,5 +1,7 @@
 """Admin endpoints for cost/usage governance, consumed by the dashboard
 (module 8). See project_plan/03-cost-usage-governance.md §5.
+
+Like every /v1/admin route, these require a logged-in admin (app/main.py).
 """
 from datetime import datetime
 from decimal import Decimal
@@ -14,7 +16,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.governance.budget import get_budget_policy, get_current_spend
 from app.core.governance.redis_client import get_redis
 from app.core.redaction.policy import get_redaction_policy
-from app.db.models import BudgetPeriod, BudgetPolicy, RedactionMode, RedactionPolicy, UsageRecord
+from app.db.models import (
+    BudgetPeriod,
+    BudgetPolicy,
+    RedactionMode,
+    RedactionPolicy,
+    Team,
+    UsageRecord,
+)
 from app.db.session import get_db
 
 router = APIRouter(prefix="/v1/admin")
@@ -59,6 +68,21 @@ class RedactionPolicyOut(BaseModel):
 class RedactionPolicyIn(BaseModel):
     enabled_entities: list[str]
     mode: RedactionMode
+
+
+class TeamOut(BaseModel):
+    id: UUID
+    name: str
+
+    model_config = {"from_attributes": True}
+
+
+@router.get("/teams", response_model=list[TeamOut])
+async def list_teams(
+    db: AsyncSession = Depends(get_db),  # noqa: B008 - standard FastAPI DI pattern
+) -> list[Team]:
+    """Every team, for the dashboard's team pickers (module 8)."""
+    return list((await db.execute(select(Team).order_by(Team.name))).scalars().all())
 
 
 @router.get("/usage", response_model=list[UsageRecordOut])

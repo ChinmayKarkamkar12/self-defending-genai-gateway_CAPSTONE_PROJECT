@@ -1,4 +1,5 @@
 """See project_plan/06a-adaptive-defense-bandit.md §5 step 5, §6, §8."""
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import numpy as np
@@ -8,6 +9,7 @@ from httpx import Response
 from sqlalchemy import select
 
 from app.config import settings
+from app.core.admin_auth import AdminPrincipal, require_admin
 from app.core.defense import store as store_module
 from app.core.defense.features import N_FEATURES, features_from_dict
 from app.core.defense.store import BanditStore, bandit_store
@@ -20,6 +22,7 @@ from app.core.threat.classifier import (
     set_threat_classifier,
 )
 from app.db.models import BanditState, DefenseAction, ReviewQueueItem, ThreatEvent
+from app.main import app
 from tests.conftest import RAW_TEST_KEY, FakeThreatClassifier
 
 AUTH = {"Authorization": f"Bearer {RAW_TEST_KEY}"}
@@ -98,7 +101,8 @@ async def test_decision_triggers_bandit_update(client, db_session, monkeypatch):
     assert body["reward_applied"] == 0.45  # escalate on an attack, per reward.py
     assert body["item"]["status"] == "reviewed"
     assert body["item"]["decision"] == "attack"
-    assert body["item"]["reviewer"] == "analyst-1"
+    # The reviewer is the logged-in admin, not a name sent in the body.
+    assert body["item"]["reviewer"] == "test-admin"
 
     [(x, action, reward)] = calls
     event = (await db_session.execute(select(ThreatEvent))).scalar_one()
@@ -176,7 +180,7 @@ async def test_decide_unknown_item_404(client):
 async def test_decide_validates_body(client):
     url = "/v1/admin/review-queue/00000000-0000-0000-0000-000000000000/decide"
     assert (await client.post(url, json={"decision": "maybe", "reviewer": "a"})).status_code == 422
-    assert (await client.post(url, json={"decision": "attack", "reviewer": ""})).status_code == 422
+    assert (await client.post(url, json={})).status_code == 422
 
 
 async def test_review_excerpt_never_contains_raw_pii(client, db_session):
@@ -312,13 +316,20 @@ async def test_amend_reverses_the_old_reward_and_applies_the_new(client, db_sess
     await send(client)
     [item] = (await client.get("/v1/admin/review-queue")).json()
     url = f"/v1/admin/review-queue/{item['id']}"
-    first = (await client.post(f"{url}/decide", json={"decision": "attack", "reviewer": "a"}))
+
+    def log_in_as(username: str) -> None:
+        principal = AdminPrincipal(user_id=uuid.uuid4(), username=username)
+        app.dependency_overrides[require_admin] = lambda: principal
+
+    log_in_as("a")
+    first = (await client.post(f"{url}/decide", json={"decision": "attack"}))
     assert first.json()["reward_applied"] == 0.45
 
-    again = await client.post(f"{url}/decide", json={"decision": "benign", "reviewer": "b"})
+    log_in_as("b")
+    again = await client.post(f"{url}/decide", json={"decision": "benign"})
     assert again.status_code == 409
 
-    amended = await client.post(f"{url}/amend", json={"decision": "benign", "reviewer": "b"})
+    amended = await client.post(f"{url}/amend", json={"decision": "benign"})
     assert amended.status_code == 200
     body = amended.json()
     assert body["reward_applied"] == -0.1  # escalate on benign

@@ -54,6 +54,13 @@ class Settings(BaseSettings):
 
     LOG_LEVEL: str = "INFO"
 
+    # Dashboard admin login (module 8, app/core/admin_auth.py). A session
+    # lasts this long after login; this many wrong passwords for one
+    # username lock it for ADMIN_LOGIN_LOCK_SECONDS.
+    ADMIN_SESSION_TTL_SECONDS: int = Field(default=8 * 3600, ge=300)
+    ADMIN_LOGIN_MAX_FAILURES: int = Field(default=5, ge=1)
+    ADMIN_LOGIN_LOCK_SECONDS: int = Field(default=900, ge=60)
+
     # Override for where app/core/threat/classifier.py loads the trained
     # checkpoint from. Empty string (the default) means "use the repo-root
     # training/checkpoints/final/ path" - see classifier.py's

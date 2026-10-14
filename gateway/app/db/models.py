@@ -402,3 +402,18 @@ class AuditLogEntry(Base):
     latency_ms: Mapped[int] = mapped_column(Integer, nullable=False)
     prev_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     entry_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+
+
+class AdminUser(Base):
+    """A dashboard administrator (module 8). Only a salted scrypt hash of
+    the password is stored (app/core/admin_auth.py), never the password.
+    Sessions live in Redis, not here. Created with `python -m
+    scripts.create_admin`."""
+
+    __tablename__ = "admin_users"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    disabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

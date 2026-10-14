@@ -18,6 +18,7 @@ session had pending. A file gives each session a real connection; WAL lets
 the writer write while a request session holds a read transaction.
 """
 import os
+import uuid
 
 os.environ.setdefault("POSTGRES_DSN", "postgresql://test:test@localhost:5432/test")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
@@ -32,6 +33,7 @@ from sqlalchemy import event
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import settings
+from app.core.admin_auth import AdminPrincipal, require_admin
 from app.core.audit.writer import AuditWriter, reset_audit_writer, set_audit_writer
 from app.core.auth import hash_key
 from app.core.defense.rl.policy import reset_session_policy_cache
@@ -187,8 +189,12 @@ async def fake_redis():
     await redis.aclose()
 
 
-@pytest.fixture
-async def client(db_session, seeded_team_and_key, fake_redis, audit_writer):
+TEST_ADMIN = AdminPrincipal(
+    user_id=uuid.UUID("00000000-0000-0000-0000-00000000a0a0"), username="test-admin"
+)
+
+
+def _override_db_and_redis(db_session, fake_redis) -> None:
     async def _override_get_db():
         yield db_session
 
@@ -197,6 +203,24 @@ async def client(db_session, seeded_team_and_key, fake_redis, audit_writer):
 
     app.dependency_overrides[get_db] = _override_get_db
     app.dependency_overrides[get_redis] = _override_get_redis
+
+
+@pytest.fixture
+async def client(db_session, seeded_team_and_key, fake_redis, audit_writer):
+    """A client already logged in as TEST_ADMIN on every /v1/admin route
+    (module 8's admin auth is tested on its own with `anon_client`)."""
+    _override_db_and_redis(db_session, fake_redis)
+    app.dependency_overrides[require_admin] = lambda: TEST_ADMIN
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        yield ac
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+async def anon_client(db_session, seeded_team_and_key, fake_redis, audit_writer):
+    """Same, but with the real admin authentication: not logged in."""
+    _override_db_and_redis(db_session, fake_redis)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac

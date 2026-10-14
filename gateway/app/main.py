@@ -2,14 +2,17 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 
 from app.api.admin import router as admin_router
+from app.api.admin_auth import router as admin_auth_router
 from app.api.audit_admin import router as audit_admin_router
 from app.api.chat import router as chat_router
 from app.api.defense_admin import router as defense_admin_router
 from app.api.session_admin import router as session_admin_router
+from app.api.stats_admin import router as stats_admin_router
 from app.config import settings
+from app.core.admin_auth import require_admin
 from app.core.audit.writer import get_audit_writer
 from app.core.providers.registry import close_upstream_clients, open_upstream_clients
 from app.core.threat.classifier import get_threat_classifier
@@ -44,10 +47,17 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="Self-Defending GenAI Gateway", version="0.1.0", lifespan=lifespan)
 app.include_router(chat_router)
-app.include_router(admin_router)
-app.include_router(defense_admin_router)
-app.include_router(session_admin_router)
-app.include_router(audit_admin_router)
+# Module 8: every admin router requires a logged-in admin, added here once so
+# a new route can't be left open by forgetting it. Only the login router
+# (whose /me and /logout check the session themselves) is outside this.
+# tests/test_admin_auth.py checks every /v1/admin route.
+_ADMIN_ONLY = [Depends(require_admin)]
+app.include_router(admin_auth_router)
+app.include_router(admin_router, dependencies=_ADMIN_ONLY)
+app.include_router(defense_admin_router, dependencies=_ADMIN_ONLY)
+app.include_router(session_admin_router, dependencies=_ADMIN_ONLY)
+app.include_router(audit_admin_router, dependencies=_ADMIN_ONLY)
+app.include_router(stats_admin_router, dependencies=_ADMIN_ONLY)
 
 
 @app.get("/health")

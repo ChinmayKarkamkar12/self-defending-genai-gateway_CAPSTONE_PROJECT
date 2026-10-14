@@ -1,9 +1,9 @@
 """Admin endpoints for the tactical bandit, consumed by the dashboard
 (module 8). See project_plan/06a-adaptive-defense-bandit.md §6.
 
-Same caveat as every /v1/admin route today (LIMITATIONS.md L3-1, L6a-4):
-there is no admin authentication until module 8, and a forged review
-decision here would train the bandit on a false label.
+Like every /v1/admin route, these require a logged-in admin (module 8,
+app/main.py), which closes LIMITATIONS.md L6a-4. The reviewer recorded on
+a verdict is the logged-in admin, never a name the client sends.
 """
 from collections import Counter
 from datetime import UTC, datetime, timedelta
@@ -11,10 +11,11 @@ from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.admin_auth import AdminPrincipal, require_admin
 from app.core.defense import review_queue
 from app.core.defense.bandit import ACTIONS
 from app.core.defense.store import POLICY_NAME, bandit_store
@@ -56,7 +57,6 @@ class ReviewItemOut(BaseModel):
 
 class ReviewDecisionIn(BaseModel):
     decision: ThreatLabel
-    reviewer: str = Field(min_length=1, max_length=200)
 
 
 class ReviewDecisionOut(BaseModel):
@@ -136,9 +136,10 @@ async def decide_review_item(
     item_id: UUID,
     body: ReviewDecisionIn,
     db: AsyncSession = Depends(get_db),  # noqa: B008 - standard FastAPI DI pattern
+    admin: AdminPrincipal = Depends(require_admin),  # noqa: B008 - standard FastAPI DI pattern
 ) -> ReviewDecisionOut:
     try:
-        outcome = await review_queue.decide(db, item_id, body.decision, body.reviewer)
+        outcome = await review_queue.decide(db, item_id, body.decision, admin.username)
     except review_queue.ReviewItemNotFound:
         raise HTTPException(status_code=404, detail="review item not found") from None
     except review_queue.ReviewItemAlreadyDecided:
@@ -155,12 +156,13 @@ async def amend_review_item(
     item_id: UUID,
     body: ReviewDecisionIn,
     db: AsyncSession = Depends(get_db),  # noqa: B008 - standard FastAPI DI pattern
+    admin: AdminPrincipal = Depends(require_admin),  # noqa: B008 - standard FastAPI DI pattern
 ) -> ReviewDecisionOut:
     """Change an already-decided verdict: the old reward is withdrawn from
     the bandit and the new one applied. The old verdict and who amended it
     are kept on the item."""
     try:
-        outcome = await review_queue.amend(db, item_id, body.decision, body.reviewer)
+        outcome = await review_queue.amend(db, item_id, body.decision, admin.username)
     except review_queue.ReviewItemNotFound:
         raise HTTPException(status_code=404, detail="review item not found") from None
     except review_queue.ReviewItemNotDecided:
