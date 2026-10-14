@@ -363,6 +363,20 @@ If any stage crashes, the request is **blocked** (fail-closed, ADR-0001).
   head hash for outside comparison (L7-2); no retention pruning (L7-4).
 - Viva line: *the trigger makes the log hard to change; the hash chain makes
   any change visible, even by the person who can switch the trigger off.*
+- **Review pass (2026-10-14).** Re-read the module against its plan and re-ran
+  everything before calling it finished. Found and fixed four real problems,
+  each with a test that fails on the old code:
+  - **L2-2 fixed:** one long-lived HTTPS client per provider, opened at
+    startup. 20 concurrent requests went from ~7.4 s to ~2.6 s each, and 100
+    concurrent requests no longer exhaust the database pool (~9 req/s now,
+    most likely limited by CPU model inference; not profiled).
+  - A provider answering 200 with a non-JSON body (e.g. a proxy's HTML page)
+    crashed the request as a 500; it is now a clean 502, and it is audited.
+  - That 500 path also forgot to refund the team's budget reservation.
+  - The log API silently returned nothing for a reversed date range; now a 422.
+  - Also closed a test gap: the "unexpected error" audit path had no test.
+  - After the fixes: 359/359 tests with Postgres, and a live load run of 124
+    requests left 124 new audit entries and a valid chain.
 
 ## 5. Lessons that cut across modules
 
@@ -422,8 +436,7 @@ If any stage crashes, the request is **blocked** (fail-closed, ADR-0001).
 
 ## 7. What's next
 
-1. Small fix awaiting approval: one shared HTTPS client per provider (L2-2),
-   the gateway's real throughput limit.
+1. ~~Shared HTTPS client per provider (L2-2)~~: done 2026-10-14.
 2. Module 8: admin dashboard (Next.js) and admin authentication; the audit log
    viewer and its "verify integrity" button are a planned demo moment.
 3. Module 9: testing strategy; Module 10: deployment.
@@ -439,3 +452,4 @@ If any stage crashes, the request is **blocked** (fail-closed, ADR-0001).
   v3 attempt.
 - 2026-10-13 (end of day): v3 result, v2 override, 6a re-check, RL v3 NO-GO.
 - 2026-10-13 (night): module 7, tamper-evident audit logging.
+- 2026-10-14: module 7 review pass (L2-2 fixed, three smaller bugs, one test gap).
