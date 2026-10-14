@@ -15,7 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.governance.budget import get_budget_policy, get_current_spend
 from app.core.governance.redis_client import get_redis
-from app.core.redaction.policy import get_redaction_policy
+from app.core.redaction.policy import (
+    DEFAULT_ENABLED_ENTITIES,
+    DEFAULT_MODE,
+    get_redaction_policy,
+)
 from app.db.models import (
     BudgetPeriod,
     BudgetPolicy,
@@ -120,6 +124,35 @@ async def get_budget(
         rate_limit_rps=policy.rate_limit_rps,
         current_spend_usd=current_spend,
         remaining_usd=policy.limit_usd - current_spend,
+    )
+
+
+# Entity types the redaction policy can enable: the defaults plus other
+# Presidio recognizers that work with the spaCy engine in use (module 4).
+SUPPORTED_ENTITIES = [
+    *DEFAULT_ENABLED_ENTITIES,
+    "LOCATION",
+    "IBAN_CODE",
+    "US_PASSPORT",
+    "US_DRIVER_LICENSE",
+    "US_BANK_NUMBER",
+]
+
+
+class RedactionEntitiesOut(BaseModel):
+    supported: list[str]
+    default_enabled: list[str]
+    default_mode: RedactionMode
+
+
+@router.get("/redaction-entities", response_model=RedactionEntitiesOut)
+async def get_redaction_entities() -> RedactionEntitiesOut:
+    """What a team gets without its own policy, and what it can choose
+    from (module 8's PII policy screen)."""
+    return RedactionEntitiesOut(
+        supported=SUPPORTED_ENTITIES,
+        default_enabled=list(DEFAULT_ENABLED_ENTITIES),
+        default_mode=DEFAULT_MODE,
     )
 
 

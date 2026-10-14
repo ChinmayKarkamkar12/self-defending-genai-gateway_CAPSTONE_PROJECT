@@ -169,3 +169,10 @@ async def test_teams_list(client, seeded_team_and_key):
     team, _ = seeded_team_and_key
     body = (await client.get("/v1/admin/teams")).json()
     assert body == [{"id": str(team.id), "name": team.name}]
+
+
+async def test_redaction_entities(client):
+    body = (await client.get("/v1/admin/redaction-entities")).json()
+    assert set(body["default_enabled"]) <= set(body["supported"])
+    assert "EMAIL_ADDRESS" in body["default_enabled"]
+    assert body["default_mode"] == "mask"

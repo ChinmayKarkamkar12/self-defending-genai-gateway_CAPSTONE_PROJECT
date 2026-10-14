@@ -1,0 +1,93 @@
+@import "tailwindcss";
+
+/*
+  Design tokens. The idea is a checkpoint, not a generic dashboard:
+  signage type (Barlow Semi Condensed, after California highway signs) for
+  headings and figures, a legibility-first face (Atkinson Hyperlegible Next)
+  for everything read, a cool grey ground, ink-blue text, and four decision
+  colours that mean the same thing on every screen.
+*/
+@theme {
+  --font-sans: var(--font-body), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-sign), var(--font-body), ui-sans-serif, sans-serif;
+
+  --color-ground: #e6eaee;
+  --color-surface: #f5f7f9;
+  --color-sheet: #ffffff;
+  --color-ink: #14243a;
+  --color-ink-2: #45566c;
+  --color-ink-3: #6b7a8d;
+  --color-rule: #c6ced8;
+  --color-rule-soft: #d9dfe6;
+  --color-focus: #1f6fd1;
+
+  /* Decisions: fills, and darker text tints that pass contrast on white. */
+  --color-allowed: #2f7d6b;
+  --color-allowed-ink: #22604f;
+  --color-allowed-wash: #e1efea;
+  --color-cleaned: #b7862b;
+  --color-cleaned-ink: #7a5714;
+  --color-cleaned-wash: #f5ecd9;
+  --color-held: #5b4bb7;
+  --color-held-ink: #47399a;
+  --color-held-wash: #e7e4f6;
+  --color-refused: #a6243a;
+  --color-refused-ink: #8a1c2f;
+  --color-refused-wash: #f6e1e4;
+  --color-failed: #5d6878;
+  --color-failed-ink: #505b6b;
+  --color-failed-wash: #e8eaee;
+
+  /* Type scale: 1.25 ratio from a 16px base. */
+  --text-xs: 0.8rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.5625rem;
+  --text-2xl: 1.953rem;
+  --text-3xl: 2.441rem;
+  --text-4xl: 3.815rem;
+}
+
+@layer base {
+  html {
+    background: var(--color-ground);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    min-height: 100vh;
+    line-height: 1.55;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+    line-height: 1.15;
+    letter-spacing: 0.005em;
+  }
+
+  /* Figures line up in columns everywhere. */
+  .figures,
+  table {
+    font-variant-numeric: tabular-nums;
+  }
+
+  :focus-visible {
+    outline: 3px solid var(--color-focus);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
