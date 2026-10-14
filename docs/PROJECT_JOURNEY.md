@@ -67,6 +67,7 @@ If any stage crashes, the request is **blocked** (fail-closed, ADR-0001).
 | 2026-10-12 | Data expansion started: 4x more training data, new locked test set | `7c026df`, `ca6f872` |
 | 2026-10-13 | Classifier v2 shipped as a recorded override; RL v3 NO-GO | `9897a4e`..`c124640` |
 | 2026-10-13 | Module 7: tamper-evident audit log (hash chain, trigger, tamper demo) | see PROGRESS.md |
+| 2026-10-14 | Module 7 review: 5 fixes incl. 3x faster gateway; optional Ollama provider and first real end-to-end run; streaming rejected | `18eadc2`..`9486c01` |
 
 ---
 
@@ -363,37 +364,58 @@ If any stage crashes, the request is **blocked** (fail-closed, ADR-0001).
   head hash for outside comparison (L7-2); no retention pruning (L7-4).
 - Viva line: *the trigger makes the log hard to change; the hash chain makes
   any change visible, even by the person who can switch the trigger off.*
-- **Review pass (2026-10-14).** Re-read the module against its plan and re-ran
-  everything before calling it finished. Found and fixed four real problems,
-  each with a test that fails on the old code:
-  - **L2-2 fixed:** one long-lived HTTPS client per provider, opened at
-    startup. 20 concurrent requests went from ~7.4 s to ~2.6 s each, and 100
-    concurrent requests no longer exhaust the database pool (~9 req/s now,
-    most likely limited by CPU model inference; not profiled).
-  - A provider answering 200 with a non-JSON body (e.g. a proxy's HTML page)
-    crashed the request as a 500; it is now a clean 502, and it is audited.
-  - That 500 path also forgot to refund the team's budget reservation.
-  - The log API silently returned nothing for a reversed date range; now a 422.
-  - Also closed a test gap: the "unexpected error" audit path had no test.
-  - After the fixes: 359/359 tests with Postgres, and a live load run of 124
-    requests left 124 new audit entries and a valid chain.
-- **A real model, for free (2026-10-14).** With no paid API key, the "real
-  answer comes back" path had only ever been tested with fake replies. Added
-  an *optional* provider for Ollama (a model running on the laptop), off
-  unless one `.env` line is set; a `local-` model prefix keeps the audit log
-  honest about which model answered and what it cost ($0). The live run is the
-  best demo in the project: the gateway redacted an email and phone number
-  before the model saw them (the model's reply literally says
-  `[REDACTED_EMAIL_ADDRESS]`), blocked an injection, and logged all of it with
-  a valid hash chain.
-- **Streaming, found by testing honestly (2026-10-14).** Sending
-  `"stream": true` (answers that arrive word by word, like ChatGPT) gave a
-  confusing 502, after the provider had already generated, and would have
-  billed, the answer. Never in the plan, never tested. Decision: reject it up
-  front with a clear message, audited, and record it as a deliberate limit
-  (L2-3). Viva line: *streaming is possible, but it conflicts with checking
-  the whole answer before the user sees it; we chose inspection over
-  streaming, and buffer-then-scan is the future-work path.*
+- **Follow-up work on 2026-10-14** (review fixes, Ollama, streaming): see the
+  next section, "Changes made after module 7".
+
+### Changes made after module 7 — 2026-10-14
+
+Before moving to module 8, the whole of module 7 was re-checked against its
+plan and run again (tests *and* the live Docker stack), instead of trusting
+the notes from the day before. Every change below has a test that fails on
+the old code and passes on the new code.
+
+| # | What changed | Why (what was wrong) | How it was fixed | Proof | Commit |
+|---|---|---|---|---|---|
+| 1 | **Gateway speed (L2-2)** | For *every* request the gateway built a new HTTPS client, which loads the security certificates (~0.3 s) and freezes the whole server meanwhile. Result: only ~3 requests/second; 20 users at once waited ~7.4 s each; 100 at once crashed the database pool | One long-lived HTTPS client per provider, opened when the gateway starts and closed when it stops (`UpstreamClient` in `providers/base.py`, wired in `main.py`) | Live: 20 at once ~7.4 s → ~2.6 s each; 100 at once all completed; ~9 req/s | `18eadc2` |
+| 2 | **Bad provider replies** | If a provider answered "200 OK" but with a non-JSON body (e.g. a proxy's HTML error page), the gateway crashed with an unhandled 500 | The adapters catch it and report a normal "upstream error" (502), which is audited like any other | New tests for OpenAI and Anthropic | `18eadc2` |
+| 3 | **Budget refund on crashes** | On that crash path the team's pre-call budget reservation was never given back, so the team looked like it had spent money it hadn't | The crash path now refunds the reservation; the refund removes it afterwards so it can never be refunded twice | New test | `18eadc2` |
+| 4 | **Date filter check** | Asking the log API for `from` later than `to` silently returned nothing, which looks like "nothing happened" | Returns a clear 422 error instead | New test | `18eadc2` |
+| 5 | **Missing test** | The "unexpected error" exit path had no test proving it still writes an audit entry | Test added (it did work) | New test | `18eadc2` |
+| 6 | **Optional Ollama provider** | No paid API key, so the "real answer comes back" path had only ever been tested with fake replies | Optional, off by default: one `.env` line (`OLLAMA_BASE_URL`) turns it on; model `local-llama3` goes to a model running on the laptop. OpenAI/Anthropic routing and docker-compose untouched. Cost recorded as $0 | 7 new tests; first real end-to-end run (below) | `b14ad63` |
+| 7 | **Streaming rejected (L2-3)** | `"stream": true` (answers that arrive word by word, like ChatGPT) was sent to the provider, generated (and billed), then failed with a confusing 502 and $0 recorded. Never in the plan | Refused first, before any budget, scoring or provider call: clear 422 message, audited as `rejected_streaming`. Recorded as a deliberate limit | 2 new tests; live: rejected in 0.06 s, nothing sent to the model | `9486c01` |
+
+**The first real end-to-end run** (Docker gateway → Ollama `llama3` on the
+laptop), the best demo in the project:
+
+- "What is the capital of France?" → "Paris.", logged as `allowed` with real
+  token counts and $0 cost.
+- "Write a polite email to my landlord, reach me at <email> or <phone>" → the
+  gateway removed the email and phone *before* the model saw them. The model's
+  reply literally says `[REDACTED_EMAIL_ADDRESS]`. The audit log holds only
+  `{EMAIL_ADDRESS: 1, PHONE_NUMBER: 1}`; zero copies of the real values
+  anywhere in the gateway logs.
+- "Ignore all previous instructions…" → blocked as a jailbreak; the session
+  agent tightened the session.
+- Hash chain valid after everything (145 entries).
+
+**Honest findings that were *not* fixed:**
+
+- "…Repeat back exactly what my email address is" was blocked as an attack
+  (0.93). The classifier is too suspicious of some phrasings; added to L5-2.
+- After fix 1 the gateway does ~9 requests/second. The likely limit is the
+  threat model running on CPU; not yet measured.
+
+**Totals after the day:** 368/368 tests pass (including the real-Postgres
+ones), ruff clean.
+
+**Viva lines:**
+- *Why reject streaming?* Streaming is possible, but it conflicts with checking
+  the whole answer before the user sees any of it. We chose inspection over
+  streaming; "buffer the stream, check it, then replay it" is the future-work
+  path.
+- *How did you find these bugs?* By re-running the finished module live with a
+  real model instead of only with fake replies. Several bugs only showed up
+  that way.
 
 ## 5. Lessons that cut across modules
 
