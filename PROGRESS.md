@@ -409,6 +409,10 @@
     - Keyboard decisions; visible focus ring; reduced motion respected.
   - **LIMITATIONS:** L8-1 to L8-7 added (session revocation, single role, lockout as targeted DoS, Python-side aggregation, dev-only npm audit chain, intercepted review E2E, no auto-refresh).
   - **CI** now also runs the dashboard (lint, types, tests, build) and gives the gateway job a real Postgres, so the 6 Postgres tests run there too.
+  - **Pushed to `origin/main` on 2026-10-14** (`ae68574`..`6c65ec4`; no Claude co-author trailer).
+    - The first CI run of the new dashboard job failed at the type check: `LayoutProps`/`RouteContext` are generated into `.next` by `next typegen`, which a fresh checkout doesn't have. Fixed: `typecheck` = `next typegen && tsc --noEmit` (`6c65ec4`).
+    - GitHub Actions on `6c65ec4`: **success**, both jobs (https://github.com/ChinmayKarkamkar12/self-defending-genai-gateway_CAPSTONE_PROJECT/actions/runs/38535991692).
+    - Not confirmed: whether the 6 Postgres tests ran in CI or were skipped. The job now sets `TEST_POSTGRES_DSN` with a Postgres service, but the job log needs GitHub auth to read. Check it in the Actions UI.
 
 ## In progress
 (none)
