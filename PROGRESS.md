@@ -361,6 +361,7 @@
     - **Tests:** 2 new; **368/368** with Postgres; ruff clean.
     - **Live:** `stream:true` -> 422 in 0.06 s, audited, nothing sent to Ollama; `stream:false` -> 200. Chain valid (145).
     - **For module 8:** the dashboard's outcome filter and colours need this 12th value. **For module 11:** "buffer-then-scan streaming" is a candidate roadmap item.
+  - **Pushed to `origin/main` on 2026-10-14** (`18eadc2`, `13306ed`, `b14ad63`, `9486c01`, `b0c4e47`; no Claude co-author trailer). GitHub Actions on `b0c4e47`: **success** (https://github.com/ChinmayKarkamkar12/self-defending-genai-gateway_CAPSTONE_PROJECT/actions/runs/38522609904). The real-Postgres tests are skipped in CI (no `TEST_POSTGRES_DSN`); they were run locally (368/368). The what/why/how of every 2026-10-14 change is in `docs/PROJECT_JOURNEY.md`, section "Changes made after module 7".
 
 ## In progress
 (none)
