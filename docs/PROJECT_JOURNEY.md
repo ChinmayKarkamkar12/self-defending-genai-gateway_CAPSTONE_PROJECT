@@ -666,3 +666,4 @@ Also done live for the first time: the dashboard's **Unlock key** button
 - 2026-10-15: IEEE paper material collected in `docs/IEEE_PAPER_MATERIAL.md` (section-by-section content, result tables, honest claims/non-claims).
 - 2026-10-15 (later): 6-page IEEE conference paper written in `paper/ieee_paper.tex` (IEEEtran, TikZ/pgfplots figures), compiled to `paper/ieee_paper.pdf`.
 - 2026-10-15 (evening): narrated video walkthrough script in `docs/VIDEO_DEMO_SCRIPT.md` (11 scenes, ~13 min, built on `DEMO_SCRIPT.md`).
+- 2026-10-15 (evening): HF_TOKEN added; first Full checks run exposed an e2e login bug (duplicate admin keys in the CI .env), fixed in b5f571e; Full checks green, L9-3 resolved.
