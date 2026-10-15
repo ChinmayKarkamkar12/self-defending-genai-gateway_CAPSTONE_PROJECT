@@ -169,7 +169,11 @@ jobs:
           # print it into the log. Everything else it generates itself.
           PASSWORD=$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')
           echo "::add-mask::$PASSWORD"
-          cp .env.example .env
+          # Drop .env.example's own lines for these keys before appending:
+          # reset_demo.sh reads the first copy of a key and Compose the last,
+          # so a duplicate empty DEMO_ADMIN_PASSWORD made the script generate
+          # a password that overwrote ours, and the login test failed.
+          grep -v -E '^(HF_TOKEN|DEMO_ADMIN_USERNAME|DEMO_ADMIN_PASSWORD)=' .env.example > .env
           {
             echo "HF_TOKEN=$HF_TOKEN"
             echo "DEMO_ADMIN_USERNAME=e2e-ci"
