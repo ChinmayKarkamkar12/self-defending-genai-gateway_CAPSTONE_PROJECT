@@ -663,3 +663,6 @@ Also done live for the first time: the dashboard's **Unlock key** button
 - 2026-10-14 (night): module 8, admin dashboard.
 - 2026-10-14 (later): module 9 section, lesson 9, a testing viva answer; "What's next" updated.
 - 2026-10-14 (later still): module 10 section, a deployment viva answer; "What's next" updated.
+- 2026-10-15: IEEE paper material collected in `docs/IEEE_PAPER_MATERIAL.md` (section-by-section content, result tables, honest claims/non-claims).
+- 2026-10-15 (later): 6-page IEEE conference paper written in `paper/ieee_paper.tex` (IEEEtran, TikZ/pgfplots figures), compiled to `paper/ieee_paper.pdf`.
+- 2026-10-15 (evening): narrated video walkthrough script in `docs/VIDEO_DEMO_SCRIPT.md` (11 scenes, ~13 min, built on `DEMO_SCRIPT.md`).
